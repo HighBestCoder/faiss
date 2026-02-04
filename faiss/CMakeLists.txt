@@ -121,6 +121,13 @@ if(FAISS_ENABLE_SVS)
   )
 endif()
 
+if(FAISS_ENABLE_COMPRESSED_STORAGE)
+  list(APPEND FAISS_SRC
+    IndexFlatCompressed.cpp
+    IndexHNSWCompressed.cpp
+  )
+endif()
+
 set(FAISS_HEADERS
   AutoTune.h
   Clustering.h
@@ -286,6 +293,13 @@ if(FAISS_ENABLE_SVS)
   )
 endif()
 
+if(FAISS_ENABLE_COMPRESSED_STORAGE)
+  list(APPEND FAISS_HEADERS
+    IndexFlatCompressed.h
+    IndexHNSWCompressed.h
+  )
+endif()
+
 if(NOT WIN32)
   list(APPEND FAISS_SRC invlists/OnDiskInvertedLists.cpp)
   list(APPEND FAISS_HEADERS invlists/OnDiskInvertedLists.h)
@@ -375,6 +389,29 @@ if(FAISS_ENABLE_SVS)
   target_link_libraries(faiss_sve PUBLIC svs::svs_runtime)
 
   install(DIRECTORY ${svs_SOURCE_DIR}/lib/ DESTINATION ${CMAKE_INSTALL_LIBDIR} FILES_MATCHING PATTERN "libsvs_runtime.so*")
+endif()
+
+if(FAISS_ENABLE_COMPRESSED_STORAGE)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(LZ4 REQUIRED liblz4)
+  pkg_check_modules(ZSTD REQUIRED libzstd)
+
+  target_include_directories(faiss PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
+  target_link_libraries(faiss PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
+  target_include_directories(faiss_avx2 PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
+  target_link_libraries(faiss_avx2 PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
+  target_include_directories(faiss_avx512 PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
+  target_link_libraries(faiss_avx512 PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
+  target_include_directories(faiss_avx512_spr PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
+  target_link_libraries(faiss_avx512_spr PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
+  target_include_directories(faiss_sve PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
+  target_link_libraries(faiss_sve PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
+
+  target_compile_definitions(faiss PRIVATE FAISS_ENABLE_COMPRESSED_STORAGE)
+  target_compile_definitions(faiss_avx2 PRIVATE FAISS_ENABLE_COMPRESSED_STORAGE)
+  target_compile_definitions(faiss_avx512 PRIVATE FAISS_ENABLE_COMPRESSED_STORAGE)
+  target_compile_definitions(faiss_avx512_spr PRIVATE FAISS_ENABLE_COMPRESSED_STORAGE)
+  target_compile_definitions(faiss_sve PRIVATE FAISS_ENABLE_COMPRESSED_STORAGE)
 endif()
 
 # Handle `#include <faiss/foo.h>`.
