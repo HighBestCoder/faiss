@@ -15,6 +15,7 @@
 #include <thread>
 
 #include <faiss/impl/FaissAssert.h>
+#include <faiss/impl/IDSelector.h>
 #include <faiss/utils/distances.h>
 
 namespace faiss {
