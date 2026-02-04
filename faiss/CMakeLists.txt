@@ -396,15 +396,25 @@ if(FAISS_ENABLE_COMPRESSED_STORAGE)
   pkg_check_modules(LZ4 REQUIRED liblz4)
   pkg_check_modules(ZSTD REQUIRED libzstd)
 
+  # Add include directories
   target_include_directories(faiss PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
-  target_link_libraries(faiss PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
   target_include_directories(faiss_avx2 PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
-  target_link_libraries(faiss_avx2 PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
   target_include_directories(faiss_avx512 PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
-  target_link_libraries(faiss_avx512 PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
   target_include_directories(faiss_avx512_spr PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
-  target_link_libraries(faiss_avx512_spr PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
   target_include_directories(faiss_sve PRIVATE ${LZ4_INCLUDE_DIRS} ${ZSTD_INCLUDE_DIRS})
+
+  # Add library directories for the linker
+  target_link_directories(faiss PRIVATE ${LZ4_LIBRARY_DIRS} ${ZSTD_LIBRARY_DIRS})
+  target_link_directories(faiss_avx2 PRIVATE ${LZ4_LIBRARY_DIRS} ${ZSTD_LIBRARY_DIRS})
+  target_link_directories(faiss_avx512 PRIVATE ${LZ4_LIBRARY_DIRS} ${ZSTD_LIBRARY_DIRS})
+  target_link_directories(faiss_avx512_spr PRIVATE ${LZ4_LIBRARY_DIRS} ${ZSTD_LIBRARY_DIRS})
+  target_link_directories(faiss_sve PRIVATE ${LZ4_LIBRARY_DIRS} ${ZSTD_LIBRARY_DIRS})
+
+  # Link the libraries
+  target_link_libraries(faiss PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
+  target_link_libraries(faiss_avx2 PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
+  target_link_libraries(faiss_avx512 PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
+  target_link_libraries(faiss_avx512_spr PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
   target_link_libraries(faiss_sve PRIVATE ${LZ4_LIBRARIES} ${ZSTD_LIBRARIES})
 
   target_compile_definitions(faiss PRIVATE FAISS_ENABLE_COMPRESSED_STORAGE)
