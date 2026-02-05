@@ -244,10 +244,45 @@ struct CacheAlignedFlatL2Dis : faiss::DistanceComputer {
             float& dis1,
             float& dis2,
             float& dis3) override {
-        dis0 = faiss::fvec_L2sqr(q_copy.data(), storage.get_vector(idx0), d);
-        dis1 = faiss::fvec_L2sqr(q_copy.data(), storage.get_vector(idx1), d);
-        dis2 = faiss::fvec_L2sqr(q_copy.data(), storage.get_vector(idx2), d);
-        dis3 = faiss::fvec_L2sqr(q_copy.data(), storage.get_vector(idx3), d);
+        faiss::fvec_L2sqr_batch_4(
+                q_copy.data(),
+                storage.get_vector(idx0),
+                storage.get_vector(idx1),
+                storage.get_vector(idx2),
+                storage.get_vector(idx3),
+                d,
+                dis0, dis1, dis2, dis3);
+    }
+
+    void distances_batch_8(
+            const faiss::idx_t idx0,
+            const faiss::idx_t idx1,
+            const faiss::idx_t idx2,
+            const faiss::idx_t idx3,
+            const faiss::idx_t idx4,
+            const faiss::idx_t idx5,
+            const faiss::idx_t idx6,
+            const faiss::idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) override {
+        faiss::fvec_L2sqr_batch_8(
+                q_copy.data(),
+                storage.get_vector(idx0),
+                storage.get_vector(idx1),
+                storage.get_vector(idx2),
+                storage.get_vector(idx3),
+                storage.get_vector(idx4),
+                storage.get_vector(idx5),
+                storage.get_vector(idx6),
+                storage.get_vector(idx7),
+                d,
+                dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
     }
 };
 

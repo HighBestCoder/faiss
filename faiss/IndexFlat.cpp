@@ -173,6 +173,47 @@ struct FlatL2Dis : FlatCodesDistanceComputer {
         dis3 = dp3;
     }
 
+    // compute eight distances using AVX-512 optimized batch function
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) final override {
+        ndis += 8;
+
+        const float* __restrict y0 =
+                reinterpret_cast<const float*>(codes + idx0 * code_size);
+        const float* __restrict y1 =
+                reinterpret_cast<const float*>(codes + idx1 * code_size);
+        const float* __restrict y2 =
+                reinterpret_cast<const float*>(codes + idx2 * code_size);
+        const float* __restrict y3 =
+                reinterpret_cast<const float*>(codes + idx3 * code_size);
+        const float* __restrict y4 =
+                reinterpret_cast<const float*>(codes + idx4 * code_size);
+        const float* __restrict y5 =
+                reinterpret_cast<const float*>(codes + idx5 * code_size);
+        const float* __restrict y6 =
+                reinterpret_cast<const float*>(codes + idx6 * code_size);
+        const float* __restrict y7 =
+                reinterpret_cast<const float*>(codes + idx7 * code_size);
+
+        fvec_L2sqr_batch_8(q, y0, y1, y2, y3, y4, y5, y6, y7, d,
+                           dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
+    }
+
     void partial_dot_product_batch_4(
             const idx_t idx0,
             const idx_t idx1,
@@ -279,6 +320,47 @@ struct FlatIPDis : FlatCodesDistanceComputer {
         dis1 = dp1;
         dis2 = dp2;
         dis3 = dp3;
+    }
+
+    // compute eight distances using AVX-512 optimized batch function
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) final override {
+        ndis += 8;
+
+        const float* __restrict y0 =
+                reinterpret_cast<const float*>(codes + idx0 * code_size);
+        const float* __restrict y1 =
+                reinterpret_cast<const float*>(codes + idx1 * code_size);
+        const float* __restrict y2 =
+                reinterpret_cast<const float*>(codes + idx2 * code_size);
+        const float* __restrict y3 =
+                reinterpret_cast<const float*>(codes + idx3 * code_size);
+        const float* __restrict y4 =
+                reinterpret_cast<const float*>(codes + idx4 * code_size);
+        const float* __restrict y5 =
+                reinterpret_cast<const float*>(codes + idx5 * code_size);
+        const float* __restrict y6 =
+                reinterpret_cast<const float*>(codes + idx6 * code_size);
+        const float* __restrict y7 =
+                reinterpret_cast<const float*>(codes + idx7 * code_size);
+
+        fvec_inner_product_batch_8(q, y0, y1, y2, y3, y4, y5, y6, y7, d,
+                           dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
     }
 };
 
