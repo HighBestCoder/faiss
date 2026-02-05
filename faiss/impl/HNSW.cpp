@@ -666,22 +666,32 @@ int search_from_candidates(
         size_t begin, end;
         hnsw.neighbor_range(v0, level, &begin, &end);
 
-        // a faster version: reference version in unit test test_hnsw.cpp
-        // the following version processes 4 neighbors at a time
+        // Prefetch 8 neighbors ahead (1 batch) - tuned via benchmarking
+        constexpr size_t PREFETCH_DISTANCE = 8;
+
         size_t jmax = begin;
-        for (size_t j = begin; j < end; j++) {
+        int neighbor_ids[64];
+        size_t num_neighbors = 0;
+
+        for (size_t j = begin; j < end && num_neighbors < 64; j++) {
             int v1 = hnsw.neighbors[j];
             if (v1 < 0) {
                 break;
             }
-
-            prefetch_L2(vt.visited.data() + v1);
-            qdis.prefetch(v1);
+            neighbor_ids[num_neighbors++] = v1;
             jmax += 1;
         }
 
+        size_t prefetch_idx = 0;
+        for (; prefetch_idx < std::min(num_neighbors, PREFETCH_DISTANCE);
+             prefetch_idx++) {
+            int v1 = neighbor_ids[prefetch_idx];
+            prefetch_L2(vt.visited.data() + v1);
+            qdis.prefetch(v1);
+        }
+
         int counter = 0;
-        size_t saved_j[4];
+        size_t saved_j[8];
 
         threshold = res.threshold;
 
@@ -697,34 +707,72 @@ int search_from_candidates(
             candidates.push(idx, dis);
         };
 
-        for (size_t j = begin; j < jmax; j++) {
-            int v1 = hnsw.neighbors[j];
+        for (size_t ni = 0; ni < num_neighbors; ni++) {
+            int v1 = neighbor_ids[ni];
+
+            if (prefetch_idx < num_neighbors) {
+                int v_prefetch = neighbor_ids[prefetch_idx];
+                prefetch_L2(vt.visited.data() + v_prefetch);
+                qdis.prefetch(v_prefetch);
+                prefetch_idx++;
+            }
 
             bool vget = vt.get(v1);
             vt.set(v1);
             saved_j[counter] = v1;
             counter += vget ? 0 : 1;
 
-            if (counter == 4) {
-                float dis[4];
-                qdis.distances_batch_4(
+            if (counter == 8) {
+                float dis[8];
+                qdis.distances_batch_8(
                         saved_j[0],
                         saved_j[1],
                         saved_j[2],
                         saved_j[3],
+                        saved_j[4],
+                        saved_j[5],
+                        saved_j[6],
+                        saved_j[7],
                         dis[0],
                         dis[1],
                         dis[2],
-                        dis[3]);
+                        dis[3],
+                        dis[4],
+                        dis[5],
+                        dis[6],
+                        dis[7]);
 
-                for (size_t id4 = 0; id4 < 4; id4++) {
-                    add_to_heap(saved_j[id4], dis[id4]);
+                for (size_t id8 = 0; id8 < 8; id8++) {
+                    add_to_heap(saved_j[id8], dis[id8]);
                 }
 
-                ndis += 4;
+                ndis += 8;
 
                 counter = 0;
             }
+        }
+
+        // Handle remaining elements (0-7)
+        if (counter >= 4) {
+            float dis[4];
+            qdis.distances_batch_4(
+                    saved_j[0],
+                    saved_j[1],
+                    saved_j[2],
+                    saved_j[3],
+                    dis[0],
+                    dis[1],
+                    dis[2],
+                    dis[3]);
+            for (size_t id4 = 0; id4 < 4; id4++) {
+                add_to_heap(saved_j[id4], dis[id4]);
+            }
+            ndis += 4;
+            // Shift remaining elements
+            for (int k = 4; k < counter; k++) {
+                saved_j[k - 4] = saved_j[k];
+            }
+            counter -= 4;
         }
 
         for (size_t icnt = 0; icnt < counter; icnt++) {
