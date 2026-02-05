@@ -1681,6 +1681,48 @@ int HNSW::MinimaxHeap::pop_min(float* vmin_out) {
 }
 #endif
 
+#ifdef __AVX512F__
+int HNSW::MinimaxHeap::count_below(float thresh) {
+    int n_below = 0;
+    const __m512 vthresh = _mm512_set1_ps(thresh);
+    
+    const int k16 = (k / 16) * 16;
+    for (int i = 0; i < k16; i += 16) {
+        __m512 distances = _mm512_loadu_ps(dis.data() + i);
+        __mmask16 mask = _mm512_cmp_ps_mask(distances, vthresh, _CMP_LT_OS);
+        n_below += _mm_popcnt_u32(mask);
+    }
+    
+    for (int i = k16; i < k; i++) {
+        if (dis[i] < thresh) {
+            n_below++;
+        }
+    }
+
+    return n_below;
+}
+#elif defined(__AVX2__)
+int HNSW::MinimaxHeap::count_below(float thresh) {
+    int n_below = 0;
+    const __m256 vthresh = _mm256_set1_ps(thresh);
+    
+    const int k8 = (k / 8) * 8;
+    for (int i = 0; i < k8; i += 8) {
+        __m256 distances = _mm256_loadu_ps(dis.data() + i);
+        __m256 cmp = _mm256_cmp_ps(distances, vthresh, _CMP_LT_OS);
+        int mask = _mm256_movemask_ps(cmp);
+        n_below += _mm_popcnt_u32(mask);
+    }
+    
+    for (int i = k8; i < k; i++) {
+        if (dis[i] < thresh) {
+            n_below++;
+        }
+    }
+
+    return n_below;
+}
+#else
 int HNSW::MinimaxHeap::count_below(float thresh) {
     int n_below = 0;
     for (int i = 0; i < k; i++) {
@@ -1691,5 +1733,6 @@ int HNSW::MinimaxHeap::count_below(float thresh) {
 
     return n_below;
 }
+#endif
 
 } // namespace faiss
