@@ -33,13 +33,40 @@
 #include <faiss/IndexHNSW.h>
 #include <faiss/impl/DistanceComputer.h>
 #include <faiss/impl/FaissAssert.h>
+#include <faiss/impl/platform_macros.h>
 #include <faiss/utils/distances.h>
 #include <faiss/utils/prefetch.h>
 
 #include <omp.h>
 
 #ifdef __linux__
+#include <sys/mman.h>
 #include <sys/resource.h>
+#include <unistd.h>
+#endif
+
+#ifdef __SSE2__
+#include <xmmintrin.h>
+#endif
+
+//=============================================================================
+// DPDK-style optimization macros
+//=============================================================================
+
+// Branch prediction hints
+#ifndef likely
+#if defined(__GNUC__) || defined(__clang__)
+#define likely(x)   __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+#define likely(x)   (x)
+#define unlikely(x) (x)
+#endif
+#endif
+
+// Cache line size (typically 64 bytes on x86)
+#ifndef CACHE_LINE_SIZE
+#define CACHE_LINE_SIZE 64
 #endif
 
 namespace {
@@ -516,6 +543,218 @@ float ChunkedFlatL2Dis::symmetric_dis(faiss::idx_t i, faiss::idx_t j) {
 }
 
 //=============================================================================
+// Custom Storage 4: Hugepage-backed Chunked Storage (Linux only)
+// Uses mmap with MAP_HUGETLB for 2MB hugepages to reduce TLB misses
+//=============================================================================
+
+#ifdef __linux__
+
+struct IndexHugepageChunkedFlat;
+
+struct HugepageFlatL2Dis : faiss::DistanceComputer {
+    const IndexHugepageChunkedFlat& storage;
+    size_t d;
+    const float* q = nullptr;
+    
+    size_t chunk_shift;
+    size_t chunk_mask;
+    float* const* chunk_ptrs;
+
+    explicit HugepageFlatL2Dis(const IndexHugepageChunkedFlat& s);
+
+    void set_query(const float* x) override {
+        q = x;
+    }
+
+    FAISS_ALWAYS_INLINE const float* get_vec(faiss::idx_t i) const {
+        return chunk_ptrs[i >> chunk_shift] + (i & chunk_mask) * d;
+    }
+
+    float operator()(faiss::idx_t i) override;
+
+    float symmetric_dis(faiss::idx_t i, faiss::idx_t j) override;
+    
+    void distances_batch_4(
+            const faiss::idx_t idx0,
+            const faiss::idx_t idx1,
+            const faiss::idx_t idx2,
+            const faiss::idx_t idx3,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3) override {
+        prefetch_L2(get_vec(idx0));
+        prefetch_L2(get_vec(idx1));
+        prefetch_L2(get_vec(idx2));
+        prefetch_L2(get_vec(idx3));
+        
+        const float* v0 = get_vec(idx0);
+        prefetch_L1(v0 + 64);
+        
+        const float* v1 = get_vec(idx1);
+        prefetch_L1(v1 + 64);
+        
+        const float* v2 = get_vec(idx2);
+        prefetch_L1(v2 + 64);
+        
+        const float* v3 = get_vec(idx3);
+        prefetch_L1(v3 + 64);
+        
+        faiss::fvec_L2sqr_batch_4(q, v0, v1, v2, v3, d, dis0, dis1, dis2, dis3);
+    }
+};
+
+struct IndexHugepageChunkedFlat : faiss::Index {
+    size_t d;
+    size_t chunk_element_size;
+    size_t chunk_byte_size;
+    size_t chunk_shift;
+    size_t chunk_mask;
+    bool use_hugepages;
+    
+    std::vector<float*> chunk_ptrs;
+
+    static constexpr size_t HUGEPAGE_SIZE = 2 * 1024 * 1024;  // 2MB
+
+    explicit IndexHugepageChunkedFlat(faiss::idx_t dim, size_t chunk_size = 16384, bool try_hugepages = true)
+            : faiss::Index(dim, faiss::METRIC_L2), d(dim), 
+              chunk_element_size(chunk_size), use_hugepages(try_hugepages) {
+        chunk_shift = 0;
+        size_t tmp = chunk_size;
+        while (tmp > 1) {
+            tmp >>= 1;
+            chunk_shift++;
+        }
+        chunk_mask = chunk_element_size - 1;
+        chunk_byte_size = chunk_element_size * d * sizeof(float);
+        
+        // Round up to hugepage size if using hugepages
+        if (use_hugepages) {
+            chunk_byte_size = ((chunk_byte_size + HUGEPAGE_SIZE - 1) / HUGEPAGE_SIZE) * HUGEPAGE_SIZE;
+        }
+    }
+    
+    ~IndexHugepageChunkedFlat() override {
+        for (float* ptr : chunk_ptrs) {
+            if (ptr) {
+                munmap(ptr, chunk_byte_size);
+            }
+        }
+    }
+
+    float* allocate_chunk() {
+        int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        
+        if (use_hugepages) {
+            flags |= MAP_HUGETLB;
+        }
+        
+        void* ptr = mmap(nullptr, chunk_byte_size, PROT_READ | PROT_WRITE, flags, -1, 0);
+        
+        if (ptr == MAP_FAILED) {
+            if (use_hugepages) {
+                // Fallback to regular pages
+                flags = MAP_PRIVATE | MAP_ANONYMOUS;
+                ptr = mmap(nullptr, chunk_byte_size, PROT_READ | PROT_WRITE, flags, -1, 0);
+                if (ptr == MAP_FAILED) {
+                    throw std::runtime_error("mmap failed");
+                }
+                use_hugepages = false;
+            } else {
+                throw std::runtime_error("mmap failed");
+            }
+        }
+        
+        return static_cast<float*>(ptr);
+    }
+
+    const float* get_vector(faiss::idx_t i) const {
+        return chunk_ptrs[i >> chunk_shift] + (i & chunk_mask) * d;
+    }
+
+    float* get_vector_mutable(faiss::idx_t i) {
+        return chunk_ptrs[i >> chunk_shift] + (i & chunk_mask) * d;
+    }
+
+    void add(faiss::idx_t n, const float* x) override {
+        for (faiss::idx_t i = 0; i < n; i++) {
+            faiss::idx_t global_idx = ntotal + i;
+            size_t chunk_idx = global_idx >> chunk_shift;
+            size_t internal_idx = global_idx & chunk_mask;
+            
+            if (unlikely(chunk_idx >= chunk_ptrs.size())) {
+                chunk_ptrs.push_back(allocate_chunk());
+            }
+            
+            std::memcpy(
+                chunk_ptrs[chunk_idx] + internal_idx * d,
+                x + i * d,
+                d * sizeof(float));
+        }
+        ntotal += n;
+    }
+
+    void search(
+            faiss::idx_t n,
+            const float* x,
+            faiss::idx_t k,
+            float* distances,
+            faiss::idx_t* labels,
+            const faiss::SearchParameters* params = nullptr) const override {
+#pragma omp parallel for
+        for (faiss::idx_t q = 0; q < n; q++) {
+            const float* query = x + q * d;
+            std::vector<std::pair<float, faiss::idx_t>> dists(ntotal);
+            
+            for (faiss::idx_t i = 0; i < ntotal; i++) {
+                dists[i] = {faiss::fvec_L2sqr(query, get_vector(i), d), i};
+            }
+            
+            std::partial_sort(
+                    dists.begin(), dists.begin() + k, dists.end(),
+                    [](auto& a, auto& b) { return a.first < b.first; });
+            
+            for (faiss::idx_t i = 0; i < k; i++) {
+                distances[q * k + i] = dists[i].first;
+                labels[q * k + i] = dists[i].second;
+            }
+        }
+    }
+
+    void reset() override {
+        for (float* ptr : chunk_ptrs) {
+            if (ptr) {
+                munmap(ptr, chunk_byte_size);
+            }
+        }
+        chunk_ptrs.clear();
+        ntotal = 0;
+    }
+
+    void reconstruct(faiss::idx_t key, float* recons) const override {
+        std::memcpy(recons, get_vector(key), d * sizeof(float));
+    }
+
+    faiss::DistanceComputer* get_distance_computer() const override {
+        return new HugepageFlatL2Dis(*this);
+    }
+};
+
+HugepageFlatL2Dis::HugepageFlatL2Dis(const IndexHugepageChunkedFlat& s)
+        : storage(s), d(s.d), chunk_shift(s.chunk_shift), 
+          chunk_mask(s.chunk_mask), chunk_ptrs(s.chunk_ptrs.data()) {}
+
+float HugepageFlatL2Dis::operator()(faiss::idx_t i) {
+    return faiss::fvec_L2sqr(q, get_vec(i), d);
+}
+
+float HugepageFlatL2Dis::symmetric_dis(faiss::idx_t i, faiss::idx_t j) {
+    return faiss::fvec_L2sqr(get_vec(i), get_vec(j), d);
+}
+
+#endif // __linux__
+
+//=============================================================================
 // Benchmark Results
 //=============================================================================
 
@@ -744,6 +983,55 @@ BenchmarkResult benchmark_hnsw_chunked(
     return result;
 }
 
+#ifdef __linux__
+BenchmarkResult benchmark_hnsw_hugepage(
+        const float* data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb,
+        size_t nq,
+        size_t d,
+        size_t k,
+        int M,
+        int efConstruction,
+        int efSearch,
+        size_t chunk_size) {
+    BenchmarkResult result;
+    result.storage_type = "IndexHugepageChunked";
+
+    size_t mem_before = get_memory_usage_kb();
+
+    double t0 = get_time_sec();
+    
+    IndexHugepageChunkedFlat* storage = new IndexHugepageChunkedFlat(d, chunk_size, true);
+    
+    faiss::IndexHNSW index(storage, M);
+    index.own_fields = true;
+    index.hnsw.efConstruction = efConstruction;
+    index.add(nb, data);
+    
+    double t1 = get_time_sec();
+    result.build_time_sec = t1 - t0;
+
+    result.memory_kb = get_memory_usage_kb() - mem_before;
+
+    std::vector<float> distances(nq * k);
+    std::vector<faiss::idx_t> labels(nq * k);
+    index.hnsw.efSearch = efSearch;
+    index.search(std::min(nq, (size_t)100), queries, k, distances.data(), labels.data());
+
+    double t2 = get_time_sec();
+    index.search(nq, queries, k, distances.data(), labels.data());
+    double t3 = get_time_sec();
+
+    result.search_time_sec = t3 - t2;
+    result.search_qps = nq / result.search_time_sec;
+    result.recall = compute_recall(labels.data(), ground_truth, nq, k);
+
+    return result;
+}
+#endif
+
 } // anonymous namespace
 
 //=============================================================================
@@ -838,7 +1126,17 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (mode == "flat" || mode == "chunked") {
+#ifdef __linux__
+    if (mode == "all" || mode == "hugepage") {
+        std::cout << "Running benchmark: IndexHugepageChunked..." << std::endl;
+        auto result_hugepage = benchmark_hnsw_hugepage(
+                database.data(), queries.data(), ground_truth.data(),
+                nb, nq, d, k, M, efConstruction, efSearch, 16384);
+        print_result(result_hugepage);
+    }
+#endif
+
+    if (mode == "flat" || mode == "chunked" || mode == "hugepage") {
         std::cout << "\nBenchmark complete (mode=" << mode << ")." << std::endl;
         return 0;
     }
