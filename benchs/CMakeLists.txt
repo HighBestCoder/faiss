@@ -16,6 +16,15 @@ add_executable(bench_result_handler_overhead EXCLUDE_FROM_ALL
 target_link_libraries(bench_result_handler_overhead PRIVATE faiss_avx512 ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} OpenMP::OpenMP_CXX)
 target_compile_options(bench_result_handler_overhead PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mavx2 -mfma -mf16c -mavx512f -mavx512cd -mavx512vl -mavx512dq -mavx512bw -mpopcnt>)
 
+add_executable(bench_hnsw_deletion EXCLUDE_FROM_ALL bench_hnsw_deletion.cpp)
+target_link_libraries(bench_hnsw_deletion PRIVATE faiss ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} OpenMP::OpenMP_CXX)
+
+add_executable(bench_hnsw_deletion_fixed EXCLUDE_FROM_ALL bench_hnsw_deletion_fixed.cpp)
+target_link_libraries(bench_hnsw_deletion_fixed PRIVATE faiss ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} OpenMP::OpenMP_CXX)
+
+add_executable(bench_storage_indirect EXCLUDE_FROM_ALL bench_storage_indirect.cpp)
+target_link_libraries(bench_storage_indirect PRIVATE faiss ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} OpenMP::OpenMP_CXX)
+
 if(FAISS_ENABLE_COMPRESSED_STORAGE)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(LZ4 REQUIRED liblz4)
