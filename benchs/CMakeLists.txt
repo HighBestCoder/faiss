@@ -25,6 +25,16 @@ target_link_libraries(bench_hnsw_deletion_fixed PRIVATE faiss ${BLAS_LIBRARIES} 
 add_executable(bench_storage_indirect EXCLUDE_FROM_ALL bench_storage_indirect.cpp)
 target_link_libraries(bench_storage_indirect PRIVATE faiss ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} OpenMP::OpenMP_CXX)
 
+add_executable(bench_hnsw_compare EXCLUDE_FROM_ALL bench_hnsw_compare.cpp)
+target_link_libraries(bench_hnsw_compare PRIVATE faiss ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} OpenMP::OpenMP_CXX)
+
+option(ENABLE_VSAG "Enable VSAG comparison benchmark" OFF)
+if(ENABLE_VSAG)
+  target_compile_definitions(bench_hnsw_compare PRIVATE ENABLE_VSAG)
+  target_include_directories(bench_hnsw_compare PRIVATE ${VSAG_INCLUDE_DIR})
+  target_link_libraries(bench_hnsw_compare PRIVATE ${VSAG_LIBRARY})
+endif()
+
 if(FAISS_ENABLE_COMPRESSED_STORAGE)
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(LZ4 REQUIRED liblz4)

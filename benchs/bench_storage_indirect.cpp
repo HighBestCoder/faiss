@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -33,6 +34,7 @@
 #include <faiss/IndexHNSW.h>
 #include <faiss/impl/DistanceComputer.h>
 #include <faiss/impl/FaissAssert.h>
+#include <faiss/impl/HNSW.h>
 #include <faiss/impl/platform_macros.h>
 #include <faiss/utils/distances.h>
 #include <faiss/utils/prefetch.h>
@@ -1218,6 +1220,106 @@ BenchmarkResult benchmark_hnsw_compressed_ptr(
     return result;
 }
 
+//=============================================================================
+// Graph-reordered storage: BFS traversal for memory locality
+//=============================================================================
+
+std::vector<faiss::idx_t> generate_bfs_permutation(const faiss::HNSW& hnsw) {
+    size_t ntotal = hnsw.levels.size();
+    std::vector<faiss::idx_t> perm;
+    perm.reserve(ntotal);
+    
+    std::vector<bool> visited(ntotal, false);
+    std::deque<faiss::HNSW::storage_idx_t> bfs_queue;
+    
+    if (hnsw.entry_point >= 0) {
+        bfs_queue.push_back(hnsw.entry_point);
+        visited[hnsw.entry_point] = true;
+    }
+    
+    while (!bfs_queue.empty()) {
+        faiss::HNSW::storage_idx_t current = bfs_queue.front();
+        bfs_queue.pop_front();
+        perm.push_back(current);
+        
+        size_t begin, end;
+        hnsw.neighbor_range(current, 0, &begin, &end);
+        
+        for (size_t j = begin; j < end; j++) {
+            faiss::HNSW::storage_idx_t neighbor = hnsw.neighbors[j];
+            if (neighbor >= 0 && !visited[neighbor]) {
+                visited[neighbor] = true;
+                bfs_queue.push_back(neighbor);
+            }
+        }
+    }
+    
+    for (size_t i = 0; i < ntotal; i++) {
+        if (!visited[i]) {
+            perm.push_back(i);
+        }
+    }
+    
+    return perm;
+}
+
+BenchmarkResult benchmark_hnsw_graph_reordered(
+        const float* data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb,
+        size_t nq,
+        size_t d,
+        size_t k,
+        int M,
+        int efConstruction,
+        int efSearch) {
+    BenchmarkResult result;
+    result.storage_type = "IndexHNSW+GraphReorder";
+
+    size_t mem_before = get_memory_usage_kb();
+
+    double t0 = get_time_sec();
+    
+    faiss::IndexHNSWFlat index(d, M);
+    index.hnsw.efConstruction = efConstruction;
+    index.add(nb, data);
+    
+    auto perm = generate_bfs_permutation(index.hnsw);
+    index.permute_entries(perm.data());
+    
+    double t1 = get_time_sec();
+    result.build_time_sec = t1 - t0;
+
+    result.memory_kb = get_memory_usage_kb() - mem_before;
+
+    std::vector<float> distances(nq * k);
+    std::vector<faiss::idx_t> labels(nq * k);
+    index.hnsw.efSearch = efSearch;
+    index.search(std::min(nq, (size_t)100), queries, k, distances.data(), labels.data());
+
+    double t2 = get_time_sec();
+    index.search(nq, queries, k, distances.data(), labels.data());
+    double t3 = get_time_sec();
+
+    result.search_time_sec = t3 - t2;
+    result.search_qps = nq / result.search_time_sec;
+    
+    std::vector<faiss::idx_t> inverse_perm(nb);
+    for (size_t i = 0; i < nb; i++) {
+        inverse_perm[perm[i]] = i;
+    }
+    
+    std::vector<faiss::idx_t> remapped_gt(nq * k);
+    for (size_t i = 0; i < nq * k; i++) {
+        remapped_gt[i] = inverse_perm[ground_truth[i]];
+    }
+    
+    result.recall = compute_recall(labels.data(), remapped_gt.data(), nq, k);
+
+    return result;
+}
+
 } // anonymous namespace
 
 //=============================================================================
@@ -1330,7 +1432,15 @@ int main(int argc, char* argv[]) {
         print_result(result_compressed);
     }
 
-    if (mode == "flat" || mode == "chunked" || mode == "hugepage" || mode == "compressed") {
+    if (mode == "all" || mode == "reorder") {
+        std::cout << "Running benchmark: IndexHNSW+GraphReorder..." << std::endl;
+        auto result_reorder = benchmark_hnsw_graph_reordered(
+                database.data(), queries.data(), ground_truth.data(),
+                nb, nq, d, k, M, efConstruction, efSearch);
+        print_result(result_reorder);
+    }
+
+    if (mode == "flat" || mode == "chunked" || mode == "hugepage" || mode == "compressed" || mode == "reorder") {
         std::cout << "\nBenchmark complete (mode=" << mode << ")." << std::endl;
         return 0;
     }
