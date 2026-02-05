@@ -755,6 +755,146 @@ float HugepageFlatL2Dis::symmetric_dis(faiss::idx_t i, faiss::idx_t j) {
 #endif // __linux__
 
 //=============================================================================
+// Custom Storage 5: Compressed Pointer Storage
+// Uses 32-bit offsets instead of 64-bit pointers for better cache efficiency
+//=============================================================================
+
+struct IndexCompressedPtrFlat;
+
+struct CompressedPtrFlatL2Dis : faiss::DistanceComputer {
+    const IndexCompressedPtrFlat& storage;
+    size_t d;
+    const float* q = nullptr;
+    
+    const float* base_ptr;
+    const uint32_t* offsets;
+
+    explicit CompressedPtrFlatL2Dis(const IndexCompressedPtrFlat& s);
+
+    void set_query(const float* x) override {
+        q = x;
+    }
+
+    FAISS_ALWAYS_INLINE const float* get_vec(faiss::idx_t i) const {
+        return base_ptr + offsets[i];
+    }
+
+    float operator()(faiss::idx_t i) override;
+
+    float symmetric_dis(faiss::idx_t i, faiss::idx_t j) override;
+    
+    void distances_batch_4(
+            const faiss::idx_t idx0,
+            const faiss::idx_t idx1,
+            const faiss::idx_t idx2,
+            const faiss::idx_t idx3,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3) override {
+        prefetch_L2(get_vec(idx0));
+        prefetch_L2(get_vec(idx1));
+        prefetch_L2(get_vec(idx2));
+        prefetch_L2(get_vec(idx3));
+        
+        const float* v0 = get_vec(idx0);
+        prefetch_L1(v0 + 64);
+        
+        const float* v1 = get_vec(idx1);
+        prefetch_L1(v1 + 64);
+        
+        const float* v2 = get_vec(idx2);
+        prefetch_L1(v2 + 64);
+        
+        const float* v3 = get_vec(idx3);
+        prefetch_L1(v3 + 64);
+        
+        faiss::fvec_L2sqr_batch_4(q, v0, v1, v2, v3, d, dis0, dis1, dis2, dis3);
+    }
+};
+
+struct IndexCompressedPtrFlat : faiss::Index {
+    size_t d;
+    std::vector<float> data;
+    std::vector<uint32_t> offsets;
+
+    explicit IndexCompressedPtrFlat(faiss::idx_t dim)
+            : faiss::Index(dim, faiss::METRIC_L2), d(dim) {}
+
+    const float* get_vector(faiss::idx_t i) const {
+        return data.data() + offsets[i];
+    }
+
+    float* get_vector_mutable(faiss::idx_t i) {
+        return data.data() + offsets[i];
+    }
+
+    void add(faiss::idx_t n, const float* x) override {
+        size_t old_size = data.size();
+        data.resize(old_size + n * d);
+        std::memcpy(data.data() + old_size, x, n * d * sizeof(float));
+        
+        offsets.reserve(offsets.size() + n);
+        for (faiss::idx_t i = 0; i < n; i++) {
+            offsets.push_back(static_cast<uint32_t>(old_size + i * d));
+        }
+        ntotal += n;
+    }
+
+    void search(
+            faiss::idx_t n,
+            const float* x,
+            faiss::idx_t k,
+            float* distances,
+            faiss::idx_t* labels,
+            const faiss::SearchParameters* params = nullptr) const override {
+#pragma omp parallel for
+        for (faiss::idx_t q = 0; q < n; q++) {
+            const float* query = x + q * d;
+            std::vector<std::pair<float, faiss::idx_t>> dists(ntotal);
+            
+            for (faiss::idx_t i = 0; i < ntotal; i++) {
+                dists[i] = {faiss::fvec_L2sqr(query, get_vector(i), d), i};
+            }
+            
+            std::partial_sort(
+                    dists.begin(), dists.begin() + k, dists.end(),
+                    [](auto& a, auto& b) { return a.first < b.first; });
+            
+            for (faiss::idx_t i = 0; i < k; i++) {
+                distances[q * k + i] = dists[i].first;
+                labels[q * k + i] = dists[i].second;
+            }
+        }
+    }
+
+    void reset() override {
+        data.clear();
+        offsets.clear();
+        ntotal = 0;
+    }
+
+    void reconstruct(faiss::idx_t key, float* recons) const override {
+        std::memcpy(recons, get_vector(key), d * sizeof(float));
+    }
+
+    faiss::DistanceComputer* get_distance_computer() const override {
+        return new CompressedPtrFlatL2Dis(*this);
+    }
+};
+
+CompressedPtrFlatL2Dis::CompressedPtrFlatL2Dis(const IndexCompressedPtrFlat& s)
+        : storage(s), d(s.d), base_ptr(s.data.data()), offsets(s.offsets.data()) {}
+
+float CompressedPtrFlatL2Dis::operator()(faiss::idx_t i) {
+    return faiss::fvec_L2sqr(q, get_vec(i), d);
+}
+
+float CompressedPtrFlatL2Dis::symmetric_dis(faiss::idx_t i, faiss::idx_t j) {
+    return faiss::fvec_L2sqr(get_vec(i), get_vec(j), d);
+}
+
+//=============================================================================
 // Benchmark Results
 //=============================================================================
 
@@ -1032,6 +1172,52 @@ BenchmarkResult benchmark_hnsw_hugepage(
 }
 #endif
 
+BenchmarkResult benchmark_hnsw_compressed_ptr(
+        const float* data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb,
+        size_t nq,
+        size_t d,
+        size_t k,
+        int M,
+        int efConstruction,
+        int efSearch) {
+    BenchmarkResult result;
+    result.storage_type = "IndexCompressedPtr (32-bit)";
+
+    size_t mem_before = get_memory_usage_kb();
+
+    double t0 = get_time_sec();
+    
+    IndexCompressedPtrFlat* storage = new IndexCompressedPtrFlat(d);
+    
+    faiss::IndexHNSW index(storage, M);
+    index.own_fields = true;
+    index.hnsw.efConstruction = efConstruction;
+    index.add(nb, data);
+    
+    double t1 = get_time_sec();
+    result.build_time_sec = t1 - t0;
+
+    result.memory_kb = get_memory_usage_kb() - mem_before;
+
+    std::vector<float> distances(nq * k);
+    std::vector<faiss::idx_t> labels(nq * k);
+    index.hnsw.efSearch = efSearch;
+    index.search(std::min(nq, (size_t)100), queries, k, distances.data(), labels.data());
+
+    double t2 = get_time_sec();
+    index.search(nq, queries, k, distances.data(), labels.data());
+    double t3 = get_time_sec();
+
+    result.search_time_sec = t3 - t2;
+    result.search_qps = nq / result.search_time_sec;
+    result.recall = compute_recall(labels.data(), ground_truth, nq, k);
+
+    return result;
+}
+
 } // anonymous namespace
 
 //=============================================================================
@@ -1136,7 +1322,15 @@ int main(int argc, char* argv[]) {
     }
 #endif
 
-    if (mode == "flat" || mode == "chunked" || mode == "hugepage") {
+    if (mode == "all" || mode == "compressed") {
+        std::cout << "Running benchmark: IndexCompressedPtr..." << std::endl;
+        auto result_compressed = benchmark_hnsw_compressed_ptr(
+                database.data(), queries.data(), ground_truth.data(),
+                nb, nq, d, k, M, efConstruction, efSearch);
+        print_result(result_compressed);
+    }
+
+    if (mode == "flat" || mode == "chunked" || mode == "hugepage" || mode == "compressed") {
         std::cout << "\nBenchmark complete (mode=" << mode << ")." << std::endl;
         return 0;
     }

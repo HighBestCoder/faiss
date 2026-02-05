@@ -676,6 +676,7 @@ int search_from_candidates(
             }
 
             prefetch_L2(vt.visited.data() + v1);
+            qdis.prefetch(v1);
             jmax += 1;
         }
 

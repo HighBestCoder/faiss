@@ -8,6 +8,7 @@
 #pragma once
 
 #include <faiss/Index.h>
+#include <faiss/utils/prefetch.h>
 
 namespace faiss {
 
@@ -53,8 +54,49 @@ struct DistanceComputer {
         dis3 = d3;
     }
 
+    virtual void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) {
+        distances_batch_4(idx0, idx1, idx2, idx3, dis0, dis1, dis2, dis3);
+        distances_batch_4(idx4, idx5, idx6, idx7, dis4, dis5, dis6, dis7);
+    }
+
     /// compute distance between two stored vectors
     virtual float symmetric_dis(idx_t i, idx_t j) = 0;
+
+    /// prefetch vector data for index i into cache
+    /// Default implementation is a no-op; subclasses with direct memory access
+    /// can override to prefetch vector data before distance computation
+    virtual void prefetch(idx_t /*i*/) {}
+
+    /// prefetch multiple vectors with specified cache level hint
+    /// level: 1=L1, 2=L2, 3=L3
+    virtual void prefetch_batch_4(
+            idx_t i0,
+            idx_t i1,
+            idx_t i2,
+            idx_t i3,
+            int level = 2) {
+        (void)level; // default ignores level
+        prefetch(i0);
+        prefetch(i1);
+        prefetch(i2);
+        prefetch(i3);
+    }
 
     virtual ~DistanceComputer() {}
 };
@@ -95,9 +137,52 @@ struct NegativeDistanceComputer : DistanceComputer {
         dis3 = -dis3;
     }
 
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) override {
+        basedis->distances_batch_8(
+                idx0, idx1, idx2, idx3, idx4, idx5, idx6, idx7,
+                dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
+        dis0 = -dis0;
+        dis1 = -dis1;
+        dis2 = -dis2;
+        dis3 = -dis3;
+        dis4 = -dis4;
+        dis5 = -dis5;
+        dis6 = -dis6;
+        dis7 = -dis7;
+    }
+
     /// compute distance between two stored vectors
     float symmetric_dis(idx_t i, idx_t j) override {
         return -basedis->symmetric_dis(i, j);
+    }
+
+    void prefetch(idx_t i) override {
+        basedis->prefetch(i);
+    }
+
+    void prefetch_batch_4(
+            idx_t i0,
+            idx_t i1,
+            idx_t i2,
+            idx_t i3,
+            int level) override {
+        basedis->prefetch_batch_4(i0, i1, i2, i3, level);
     }
 
     virtual ~NegativeDistanceComputer() override {
@@ -128,6 +213,38 @@ struct FlatCodesDistanceComputer : DistanceComputer {
 
     float operator()(idx_t i) override {
         return distance_to_code(codes + i * code_size);
+    }
+
+    void prefetch(idx_t i) override {
+        prefetch_L2(codes + i * code_size);
+    }
+
+    void prefetch_batch_4(
+            idx_t i0,
+            idx_t i1,
+            idx_t i2,
+            idx_t i3,
+            int level) override {
+        const uint8_t* p0 = codes + i0 * code_size;
+        const uint8_t* p1 = codes + i1 * code_size;
+        const uint8_t* p2 = codes + i2 * code_size;
+        const uint8_t* p3 = codes + i3 * code_size;
+        if (level == 3) {
+            prefetch_L3(p0);
+            prefetch_L3(p1);
+            prefetch_L3(p2);
+            prefetch_L3(p3);
+        } else if (level == 1) {
+            prefetch_L1(p0);
+            prefetch_L1(p1);
+            prefetch_L1(p2);
+            prefetch_L1(p3);
+        } else {
+            prefetch_L2(p0);
+            prefetch_L2(p1);
+            prefetch_L2(p2);
+            prefetch_L2(p3);
+        }
     }
 
     /// Computes a partial dot product over a slice of the query vector.

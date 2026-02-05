@@ -262,6 +262,51 @@ void fvec_inner_product_batch_4(
 }
 FAISS_PRAGMA_IMPRECISE_FUNCTION_END
 
+FAISS_PRAGMA_IMPRECISE_FUNCTION_BEGIN
+void fvec_inner_product_batch_8(
+        const float* __restrict x,
+        const float* __restrict y0,
+        const float* __restrict y1,
+        const float* __restrict y2,
+        const float* __restrict y3,
+        const float* __restrict y4,
+        const float* __restrict y5,
+        const float* __restrict y6,
+        const float* __restrict y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    float d0 = 0, d1 = 0, d2 = 0, d3 = 0;
+    float d4 = 0, d5 = 0, d6 = 0, d7 = 0;
+    FAISS_PRAGMA_IMPRECISE_LOOP
+    for (size_t i = 0; i < d; ++i) {
+        const float xi = x[i];
+        d0 += xi * y0[i];
+        d1 += xi * y1[i];
+        d2 += xi * y2[i];
+        d3 += xi * y3[i];
+        d4 += xi * y4[i];
+        d5 += xi * y5[i];
+        d6 += xi * y6[i];
+        d7 += xi * y7[i];
+    }
+    dis0 = d0;
+    dis1 = d1;
+    dis2 = d2;
+    dis3 = d3;
+    dis4 = d4;
+    dis5 = d5;
+    dis6 = d6;
+    dis7 = d7;
+}
+FAISS_PRAGMA_IMPRECISE_FUNCTION_END
+
 /// Special version of L2sqr that computes 4 distances
 /// between x and yi, which is performance oriented.
 FAISS_PRAGMA_IMPRECISE_FUNCTION_BEGIN
@@ -296,6 +341,59 @@ void fvec_L2sqr_batch_4(
     dis1 = d1;
     dis2 = d2;
     dis3 = d3;
+}
+FAISS_PRAGMA_IMPRECISE_FUNCTION_END
+
+FAISS_PRAGMA_IMPRECISE_FUNCTION_BEGIN
+void fvec_L2sqr_batch_8(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const float* y4,
+        const float* y5,
+        const float* y6,
+        const float* y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    float d0 = 0, d1 = 0, d2 = 0, d3 = 0;
+    float d4 = 0, d5 = 0, d6 = 0, d7 = 0;
+    FAISS_PRAGMA_IMPRECISE_LOOP
+    for (size_t i = 0; i < d; ++i) {
+        const float xi = x[i];
+        const float q0 = xi - y0[i];
+        const float q1 = xi - y1[i];
+        const float q2 = xi - y2[i];
+        const float q3 = xi - y3[i];
+        const float q4 = xi - y4[i];
+        const float q5 = xi - y5[i];
+        const float q6 = xi - y6[i];
+        const float q7 = xi - y7[i];
+        d0 += q0 * q0;
+        d1 += q1 * q1;
+        d2 += q2 * q2;
+        d3 += q3 * q3;
+        d4 += q4 * q4;
+        d5 += q5 * q5;
+        d6 += q6 * q6;
+        d7 += q7 * q7;
+    }
+    dis0 = d0;
+    dis1 = d1;
+    dis2 = d2;
+    dis3 = d3;
+    dis4 = d4;
+    dis5 = d5;
+    dis6 = d6;
+    dis7 = d7;
 }
 FAISS_PRAGMA_IMPRECISE_FUNCTION_END
 
