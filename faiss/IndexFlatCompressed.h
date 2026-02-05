@@ -120,17 +120,17 @@ struct NoopCodec : CompressionCodec {
 
 /**
  * Thread-local decompression cache for IndexFlatCompressed.
- * Uses LRU eviction to cache recently accessed blocks.
+ * Uses LRU eviction to cache recently accessed vectors.
  */
 struct DecompressionCache {
     struct CacheEntry {
-        idx_t block_id = -1;
+        idx_t vector_id = -1;
         std::vector<float> data;
         uint64_t last_access = 0;
     };
 
     size_t num_entries;
-    size_t block_size_floats; // number of floats per block
+    size_t vector_size_floats; // number of floats per vector
     std::vector<CacheEntry> entries;
     uint64_t access_counter = 0;
 
@@ -138,14 +138,14 @@ struct DecompressionCache {
     mutable std::atomic<uint64_t> hits{0};
     mutable std::atomic<uint64_t> misses{0};
 
-    DecompressionCache(size_t num_entries, size_t block_size_floats);
+    DecompressionCache(size_t num_entries, size_t vector_size_floats);
 
-    /// Try to get a cached block. Returns nullptr if not cached.
-    const float* get(idx_t block_id);
+    /// Try to get a cached vector. Returns nullptr if not cached.
+    const float* get(idx_t vector_id);
 
     /// Get an entry to write to (evicts LRU if needed).
-    /// Returns pointer to data buffer and sets the block_id.
-    float* prepare_entry(idx_t block_id);
+    /// Returns pointer to data buffer and sets the vector_id.
+    float* prepare_entry(idx_t vector_id);
 
     /// Get cache hit ratio
     double hit_ratio() const;
@@ -157,35 +157,32 @@ struct DecompressionCache {
 /**
  * Compressed vector storage for flat indexes.
  *
- * Stores vectors in compressed blocks to reduce memory footprint.
- * Decompresses on-the-fly during distance computation with
- * thread-local caching to amortize decompression cost.
+ * Stores each vector individually compressed using ZSTD (by default).
+ * Supports optional thread-local LRU caching to amortize decompression cost.
  *
  * Key parameters:
- * - block_size: number of vectors per compressed block (default: 32)
- *               larger = better compression ratio, worse random access
- * - cache_size: number of blocks to cache per thread (default: 16)
- * - codec: compression algorithm (LZ4 or ZSTD)
+ * - use_cache: whether to enable LRU cache (default: true)
+ * - cache_size: number of vectors to cache per thread (default: 64)
+ * - codec: compression algorithm (ZSTD by default for single-vector compression)
  */
 struct IndexFlatCompressed : Index {
+    // Unique instance ID for thread-local cache keying
+    // Using a static counter to ensure uniqueness even after destruction/recreation
+    static std::atomic<uint64_t> next_instance_id;
+    uint64_t instance_id;
+
     // Compression parameters
-    size_t block_size = 32;  // vectors per block
-    size_t cache_size = 16;  // blocks per thread cache
+    bool use_cache = true;    // whether to use LRU cache
+    size_t cache_size = 64;   // vectors per thread cache (only used if use_cache=true)
     std::unique_ptr<CompressionCodec> codec;
 
     // Original vector dimension info
     size_t code_size; // bytes per vector = sizeof(float) * d
 
-    // Compressed storage
-    std::vector<uint8_t> compressed_data;
-    std::vector<size_t> block_offsets;    // offset in compressed_data
-    std::vector<size_t> block_comp_sizes; // compressed size of each block
+    // Compressed storage - one entry per vector
+    std::vector<std::vector<uint8_t>> compressed_vectors;
 
-    // For partial last block
-    size_t last_block_vectors = 0;
-
-    // Thread-local caches
-    mutable std::vector<std::unique_ptr<DecompressionCache>> thread_caches;
+    mutable std::vector<DecompressionCache*> thread_cache_ptrs;
     mutable std::mutex cache_mutex;
 
     // Statistics
@@ -195,16 +192,16 @@ struct IndexFlatCompressed : Index {
     /// Construct with dimension and optional parameters
     explicit IndexFlatCompressed(
             idx_t d,
-            size_t block_size = 32,
-            size_t cache_size = 16,
+            bool use_cache = true,
+            size_t cache_size = 64,
             MetricType metric = METRIC_L2);
 
     /// Construct with custom codec
     IndexFlatCompressed(
             idx_t d,
             std::unique_ptr<CompressionCodec> codec,
-            size_t block_size = 32,
-            size_t cache_size = 16,
+            bool use_cache = true,
+            size_t cache_size = 64,
             MetricType metric = METRIC_L2);
 
     ~IndexFlatCompressed() override;
@@ -224,23 +221,27 @@ struct IndexFlatCompressed : Index {
     /// Get distance computer for use with HNSW
     DistanceComputer* get_distance_computer() const override;
 
-    /// Decompress a single vector (uses cache)
+    /// Decompress a single vector
+    /// If use_cache=true, uses LRU cache
+    /// If use_cache=false, decompresses directly into thread-local buffer
     const float* get_vector(idx_t i) const;
 
-    /// Decompress a block (internal, uses cache)
-    const float* get_block(idx_t block_id) const;
+    /// Decompress a vector into provided buffer (no cache used)
+    void decompress_vector(idx_t i, float* output) const;
 
     /// Get compression statistics
     struct CompressionStats {
         size_t original_size;
         size_t compressed_size;
-        double compression_ratio;
-        size_t num_blocks;
-        double avg_block_compressed_size;
+        double compression_ratio;  // original_size / compressed_size (>1 means good compression)
+        size_t num_vectors;
+        double avg_compressed_size;
+        double min_compressed_size;
+        double max_compressed_size;
     };
     CompressionStats get_compression_stats() const;
 
-    /// Get cache statistics (aggregated across all threads)
+    /// Get cache statistics (only meaningful if use_cache=true)
     struct CacheStats {
         uint64_t total_hits;
         uint64_t total_misses;
@@ -256,20 +257,13 @@ struct IndexFlatCompressed : Index {
     /// Set codec (must be called before adding vectors)
     void set_codec(std::unique_ptr<CompressionCodec> new_codec);
 
-    /// Get number of blocks
-    size_t num_blocks() const {
-        return block_offsets.size();
-    }
+    /// Enable/disable cache (can be changed at runtime)
+    void set_use_cache(bool enabled);
 
 private:
-    /// Get or create thread-local cache
     DecompressionCache* get_thread_cache() const;
 
-    /// Compress a block of vectors
-    void compress_block(const float* vectors, size_t num_vectors);
-
-    /// Decompress a block into buffer
-    void decompress_block(idx_t block_id, float* output) const;
+    void compress_vector(const float* vector);
 };
 
 /**

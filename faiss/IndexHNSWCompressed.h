@@ -18,16 +18,16 @@ struct IndexHNSWCompressed : IndexHNSW {
     IndexHNSWCompressed(
             int d,
             int M = 32,
-            size_t block_size = 32,
-            size_t cache_size = 16,
+            bool use_cache = true,
+            size_t cache_size = 64,
             MetricType metric = METRIC_L2);
 
     IndexHNSWCompressed(
             int d,
             int M,
             std::unique_ptr<CompressionCodec> codec,
-            size_t block_size = 32,
-            size_t cache_size = 16,
+            bool use_cache = true,
+            size_t cache_size = 64,
             MetricType metric = METRIC_L2);
 
     IndexFlatCompressed* get_compressed_storage() {
@@ -36,6 +36,13 @@ struct IndexHNSWCompressed : IndexHNSW {
 
     const IndexFlatCompressed* get_compressed_storage() const {
         return dynamic_cast<const IndexFlatCompressed*>(storage);
+    }
+
+    void set_use_cache(bool enabled) {
+        auto* s = get_compressed_storage();
+        if (s) {
+            s->set_use_cache(enabled);
+        }
     }
 };
 
@@ -46,8 +53,8 @@ struct IndexHNSWCompressedLZ4 : IndexHNSWCompressed {
             int d,
             int M = 32,
             int lz4_acceleration = 1,
-            size_t block_size = 32,
-            size_t cache_size = 16,
+            bool use_cache = true,
+            size_t cache_size = 64,
             MetricType metric = METRIC_L2);
 };
 
@@ -58,8 +65,8 @@ struct IndexHNSWCompressedZSTD : IndexHNSWCompressed {
             int d,
             int M = 32,
             int zstd_level = 3,
-            size_t block_size = 32,
-            size_t cache_size = 16,
+            bool use_cache = true,
+            size_t cache_size = 64,
             MetricType metric = METRIC_L2);
 };
 

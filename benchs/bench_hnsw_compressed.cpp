@@ -5,19 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-/**
- * Benchmark comparing IndexHNSWFlat vs IndexHNSWCompressed (LZ4/ZSTD)
- *
- * Measures:
- * - Build time
- * - Search QPS (queries per second)
- * - Recall@10
- * - Memory usage
- * - Compression ratio
- *
- * Tests across multiple dimensions and configurations.
- */
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -42,14 +29,12 @@
 
 namespace {
 
-// Get current memory usage in bytes
 size_t get_memory_usage() {
     struct rusage usage;
     getrusage(RUSAGE_SELF, &usage);
-    return static_cast<size_t>(usage.ru_maxrss) * 1024; // Convert KB to bytes
+    return static_cast<size_t>(usage.ru_maxrss) * 1024;
 }
 
-// Generate random float vectors
 std::vector<float> generate_random_vectors(size_t n, size_t d, unsigned seed = 42) {
     std::vector<float> data(n * d);
     std::mt19937 rng(seed);
@@ -59,7 +44,6 @@ std::vector<float> generate_random_vectors(size_t n, size_t d, unsigned seed = 4
         data[i] = dist(rng);
     }
 
-    // Normalize vectors
     for (size_t i = 0; i < n; i++) {
         float norm = 0;
         for (size_t j = 0; j < d; j++) {
@@ -74,7 +58,6 @@ std::vector<float> generate_random_vectors(size_t n, size_t d, unsigned seed = 4
     return data;
 }
 
-// Compute ground truth using brute force
 std::vector<faiss::idx_t> compute_ground_truth(
         const float* queries,
         const float* database,
@@ -113,7 +96,6 @@ std::vector<faiss::idx_t> compute_ground_truth(
     return gt;
 }
 
-// Compute recall@k
 double compute_recall(
         const faiss::idx_t* results,
         const faiss::idx_t* ground_truth,
@@ -136,7 +118,7 @@ double compute_recall(
 struct BenchmarkResult {
     std::string index_type;
     size_t dimension;
-    size_t block_size;
+    bool use_cache;
     size_t cache_size;
     double build_time_sec;
     double search_qps;
@@ -149,8 +131,8 @@ struct BenchmarkResult {
 void print_header() {
     std::cout << std::setw(20) << "Index Type"
               << std::setw(8) << "Dim"
-              << std::setw(8) << "Block"
               << std::setw(8) << "Cache"
+              << std::setw(10) << "CacheSize"
               << std::setw(12) << "Build(s)"
               << std::setw(12) << "QPS"
               << std::setw(10) << "Recall@10"
@@ -158,14 +140,14 @@ void print_header() {
               << std::setw(12) << "Comp.Ratio"
               << std::setw(12) << "CacheHit%"
               << std::endl;
-    std::cout << std::string(116, '-') << std::endl;
+    std::cout << std::string(118, '-') << std::endl;
 }
 
 void print_result(const BenchmarkResult& r) {
     std::cout << std::setw(20) << r.index_type
               << std::setw(8) << r.dimension
-              << std::setw(8) << r.block_size
-              << std::setw(8) << r.cache_size
+              << std::setw(8) << (r.use_cache ? "ON" : "OFF")
+              << std::setw(10) << r.cache_size
               << std::setw(12) << std::fixed << std::setprecision(3) << r.build_time_sec
               << std::setw(12) << std::fixed << std::setprecision(1) << r.search_qps
               << std::setw(10) << std::fixed << std::setprecision(4) << r.recall_at_10
@@ -191,13 +173,12 @@ BenchmarkResult benchmark_hnsw_flat(
     BenchmarkResult result;
     result.index_type = "HNSWFlat";
     result.dimension = d;
-    result.block_size = 0;
+    result.use_cache = false;
     result.cache_size = 0;
     result.cache_hit_ratio = 0;
 
     size_t mem_before = get_memory_usage();
 
-    // Build
     auto build_start = std::chrono::high_resolution_clock::now();
     faiss::IndexHNSWFlat index(d, M);
     index.hnsw.efConstruction = efConstruction;
@@ -207,16 +188,12 @@ BenchmarkResult benchmark_hnsw_flat(
 
     size_t mem_after = get_memory_usage();
     result.memory_bytes = mem_after - mem_before;
-
-    // Compression ratio (1.0 = no compression)
     result.compression_ratio = 1.0;
 
-    // Search
     index.hnsw.efSearch = efSearch;
     std::vector<float> distances(nq * k);
     std::vector<faiss::idx_t> labels(nq * k);
 
-    // Warmup
     index.search(nq / 10 + 1, queries, k, distances.data(), labels.data());
 
     auto search_start = std::chrono::high_resolution_clock::now();
@@ -225,78 +202,12 @@ BenchmarkResult benchmark_hnsw_flat(
 
     double search_time = std::chrono::duration<double>(search_end - search_start).count();
     result.search_qps = nq / search_time;
-
-    // Recall
     result.recall_at_10 = compute_recall(labels.data(), ground_truth, nq, k);
 
     return result;
 }
 
 #ifdef FAISS_ENABLE_COMPRESSED_STORAGE
-
-BenchmarkResult benchmark_hnsw_compressed_lz4(
-        const float* train_data,
-        const float* queries,
-        const faiss::idx_t* ground_truth,
-        size_t nb,
-        size_t nq,
-        size_t d,
-        size_t k,
-        int M,
-        int efConstruction,
-        int efSearch,
-        size_t block_size,
-        size_t cache_size) {
-    BenchmarkResult result;
-    result.index_type = "HNSW+LZ4";
-    result.dimension = d;
-    result.block_size = block_size;
-    result.cache_size = cache_size;
-
-    size_t mem_before = get_memory_usage();
-
-    // Build
-    auto build_start = std::chrono::high_resolution_clock::now();
-    faiss::IndexHNSWCompressedLZ4 index(d, M, 1, block_size, cache_size);
-    index.hnsw.efConstruction = efConstruction;
-    index.add(nb, train_data);
-    auto build_end = std::chrono::high_resolution_clock::now();
-    result.build_time_sec = std::chrono::duration<double>(build_end - build_start).count();
-
-    size_t mem_after = get_memory_usage();
-    result.memory_bytes = mem_after - mem_before;
-
-    // Compression ratio
-    auto* storage = index.get_compressed_storage();
-    auto comp_stats = storage->get_compression_stats();
-    result.compression_ratio = comp_stats.compression_ratio;
-
-    // Search
-    index.hnsw.efSearch = efSearch;
-    std::vector<float> distances(nq * k);
-    std::vector<faiss::idx_t> labels(nq * k);
-
-    // Warmup
-    storage->reset_stats();
-    index.search(nq / 10 + 1, queries, k, distances.data(), labels.data());
-
-    storage->reset_stats();
-    auto search_start = std::chrono::high_resolution_clock::now();
-    index.search(nq, queries, k, distances.data(), labels.data());
-    auto search_end = std::chrono::high_resolution_clock::now();
-
-    double search_time = std::chrono::duration<double>(search_end - search_start).count();
-    result.search_qps = nq / search_time;
-
-    // Cache stats
-    auto cache_stats = storage->get_cache_stats();
-    result.cache_hit_ratio = cache_stats.hit_ratio;
-
-    // Recall
-    result.recall_at_10 = compute_recall(labels.data(), ground_truth, nq, k);
-
-    return result;
-}
 
 BenchmarkResult benchmark_hnsw_compressed_zstd(
         const float* train_data,
@@ -309,20 +220,19 @@ BenchmarkResult benchmark_hnsw_compressed_zstd(
         int M,
         int efConstruction,
         int efSearch,
-        size_t block_size,
-        size_t cache_size,
-        int zstd_level) {
+        int zstd_level,
+        bool use_cache,
+        size_t cache_size) {
     BenchmarkResult result;
     result.index_type = "HNSW+ZSTD" + std::to_string(zstd_level);
     result.dimension = d;
-    result.block_size = block_size;
+    result.use_cache = use_cache;
     result.cache_size = cache_size;
 
     size_t mem_before = get_memory_usage();
 
-    // Build
     auto build_start = std::chrono::high_resolution_clock::now();
-    faiss::IndexHNSWCompressedZSTD index(d, M, zstd_level, block_size, cache_size);
+    faiss::IndexHNSWCompressedZSTD index(d, M, zstd_level, use_cache, cache_size);
     index.hnsw.efConstruction = efConstruction;
     index.add(nb, train_data);
     auto build_end = std::chrono::high_resolution_clock::now();
@@ -331,17 +241,14 @@ BenchmarkResult benchmark_hnsw_compressed_zstd(
     size_t mem_after = get_memory_usage();
     result.memory_bytes = mem_after - mem_before;
 
-    // Compression ratio
     auto* storage = index.get_compressed_storage();
     auto comp_stats = storage->get_compression_stats();
     result.compression_ratio = comp_stats.compression_ratio;
 
-    // Search
     index.hnsw.efSearch = efSearch;
     std::vector<float> distances(nq * k);
     std::vector<faiss::idx_t> labels(nq * k);
 
-    // Warmup
     storage->reset_stats();
     index.search(nq / 10 + 1, queries, k, distances.data(), labels.data());
 
@@ -353,30 +260,84 @@ BenchmarkResult benchmark_hnsw_compressed_zstd(
     double search_time = std::chrono::duration<double>(search_end - search_start).count();
     result.search_qps = nq / search_time;
 
-    // Cache stats
     auto cache_stats = storage->get_cache_stats();
     result.cache_hit_ratio = cache_stats.hit_ratio;
 
-    // Recall
     result.recall_at_10 = compute_recall(labels.data(), ground_truth, nq, k);
 
     return result;
 }
 
-#endif // FAISS_ENABLE_COMPRESSED_STORAGE
+BenchmarkResult benchmark_hnsw_compressed_lz4(
+        const float* train_data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb,
+        size_t nq,
+        size_t d,
+        size_t k,
+        int M,
+        int efConstruction,
+        int efSearch,
+        bool use_cache,
+        size_t cache_size) {
+    BenchmarkResult result;
+    result.index_type = "HNSW+LZ4";
+    result.dimension = d;
+    result.use_cache = use_cache;
+    result.cache_size = cache_size;
 
-} // anonymous namespace
+    size_t mem_before = get_memory_usage();
+
+    auto build_start = std::chrono::high_resolution_clock::now();
+    faiss::IndexHNSWCompressedLZ4 index(d, M, 1, use_cache, cache_size);
+    index.hnsw.efConstruction = efConstruction;
+    index.add(nb, train_data);
+    auto build_end = std::chrono::high_resolution_clock::now();
+    result.build_time_sec = std::chrono::duration<double>(build_end - build_start).count();
+
+    size_t mem_after = get_memory_usage();
+    result.memory_bytes = mem_after - mem_before;
+
+    auto* storage = index.get_compressed_storage();
+    auto comp_stats = storage->get_compression_stats();
+    result.compression_ratio = comp_stats.compression_ratio;
+
+    index.hnsw.efSearch = efSearch;
+    std::vector<float> distances(nq * k);
+    std::vector<faiss::idx_t> labels(nq * k);
+
+    storage->reset_stats();
+    index.search(nq / 10 + 1, queries, k, distances.data(), labels.data());
+
+    storage->reset_stats();
+    auto search_start = std::chrono::high_resolution_clock::now();
+    index.search(nq, queries, k, distances.data(), labels.data());
+    auto search_end = std::chrono::high_resolution_clock::now();
+
+    double search_time = std::chrono::duration<double>(search_end - search_start).count();
+    result.search_qps = nq / search_time;
+
+    auto cache_stats = storage->get_cache_stats();
+    result.cache_hit_ratio = cache_stats.hit_ratio;
+
+    result.recall_at_10 = compute_recall(labels.data(), ground_truth, nq, k);
+
+    return result;
+}
+
+#endif
+
+}
 
 int main(int argc, char* argv[]) {
-    // Parameters
-    size_t nb = 100000;        // Number of database vectors (use 1M for full benchmark)
-    size_t nq = 1000;          // Number of queries
-    size_t k = 10;             // Top-k
-    int M = 32;                // HNSW M parameter
-    int efConstruction = 40;   // HNSW construction parameter
-    int efSearch = 64;         // HNSW search parameter
+    size_t nb = 100000;
+    size_t nq = 1000;
+    size_t k = 10;
+    int M = 32;
+    int efConstruction = 40;
+    int efSearch = 64;
 
-    // Parse command line
     if (argc > 1) {
         nb = std::atoi(argv[1]);
     }
@@ -384,7 +345,7 @@ int main(int argc, char* argv[]) {
         nq = std::atoi(argv[2]);
     }
 
-    std::cout << "=== HNSW Compressed Storage Benchmark ===" << std::endl;
+    std::cout << "=== HNSW Compressed Storage Benchmark (Per-Vector) ===" << std::endl;
     std::cout << "Database size: " << nb << " vectors" << std::endl;
     std::cout << "Queries: " << nq << std::endl;
     std::cout << "k: " << k << std::endl;
@@ -393,24 +354,16 @@ int main(int argc, char* argv[]) {
     std::cout << "Threads: " << omp_get_max_threads() << std::endl;
     std::cout << std::endl;
 
-    // Dimensions to test
     std::vector<size_t> dimensions = {128, 256, 512, 1024};
-
-    // Block sizes to test
-    std::vector<size_t> block_sizes = {16, 32, 64, 128};
-
-    // Cache sizes to test
-    std::vector<size_t> cache_sizes = {8, 16, 32};
+    std::vector<size_t> cache_sizes = {16, 32, 64, 128};
 
     for (size_t d : dimensions) {
         std::cout << "\n=== Dimension: " << d << " ===" << std::endl;
 
-        // Generate data
         std::cout << "Generating " << nb << " random vectors of dimension " << d << "..." << std::endl;
         auto database = generate_random_vectors(nb, d, 42);
         auto queries = generate_random_vectors(nq, d, 123);
 
-        // Compute ground truth
         std::cout << "Computing ground truth..." << std::endl;
         auto ground_truth = compute_ground_truth(
                 queries.data(), database.data(), nq, nb, d, k);
@@ -418,7 +371,6 @@ int main(int argc, char* argv[]) {
         std::cout << std::endl;
         print_header();
 
-        // Baseline: HNSW Flat
         auto baseline = benchmark_hnsw_flat(
                 database.data(),
                 queries.data(),
@@ -428,42 +380,63 @@ int main(int argc, char* argv[]) {
         print_result(baseline);
 
 #ifdef FAISS_ENABLE_COMPRESSED_STORAGE
-        // Test different block sizes with default cache
-        for (size_t block_size : block_sizes) {
-            auto result_lz4 = benchmark_hnsw_compressed_lz4(
+        std::cout << "\n--- ZSTD Per-Vector Compression ---" << std::endl;
+        print_header();
+
+        for (int level : {1, 3}) {
+            auto result_cache_on = benchmark_hnsw_compressed_zstd(
                     database.data(),
                     queries.data(),
                     ground_truth.data(),
                     nb, nq, d, k,
                     M, efConstruction, efSearch,
-                    block_size, 16);
-            print_result(result_lz4);
+                    level, true, 64);
+            print_result(result_cache_on);
+
+            auto result_cache_off = benchmark_hnsw_compressed_zstd(
+                    database.data(),
+                    queries.data(),
+                    ground_truth.data(),
+                    nb, nq, d, k,
+                    M, efConstruction, efSearch,
+                    level, false, 0);
+            print_result(result_cache_off);
         }
 
-        // Test different cache sizes with default block size
+        std::cout << "\n--- Cache Size Comparison (ZSTD level=3, cache ON) ---" << std::endl;
+        print_header();
+
         for (size_t cache_size : cache_sizes) {
-            if (cache_size == 16) continue; // Already tested above
-            auto result_lz4 = benchmark_hnsw_compressed_lz4(
+            auto result = benchmark_hnsw_compressed_zstd(
                     database.data(),
                     queries.data(),
                     ground_truth.data(),
                     nb, nq, d, k,
                     M, efConstruction, efSearch,
-                    32, cache_size);
-            print_result(result_lz4);
+                    3, true, cache_size);
+            print_result(result);
         }
 
-        // Test ZSTD with different compression levels
-        for (int level : {1, 3, 9}) {
-            auto result_zstd = benchmark_hnsw_compressed_zstd(
-                    database.data(),
-                    queries.data(),
-                    ground_truth.data(),
-                    nb, nq, d, k,
-                    M, efConstruction, efSearch,
-                    32, 16, level);
-            print_result(result_zstd);
-        }
+        std::cout << "\n--- LZ4 Per-Vector Compression ---" << std::endl;
+        print_header();
+
+        auto lz4_cache_on = benchmark_hnsw_compressed_lz4(
+                database.data(),
+                queries.data(),
+                ground_truth.data(),
+                nb, nq, d, k,
+                M, efConstruction, efSearch,
+                true, 64);
+        print_result(lz4_cache_on);
+
+        auto lz4_cache_off = benchmark_hnsw_compressed_lz4(
+                database.data(),
+                queries.data(),
+                ground_truth.data(),
+                nb, nq, d, k,
+                M, efConstruction, efSearch,
+                false, 0);
+        print_result(lz4_cache_off);
 #else
         std::cout << "\nNote: Compressed storage not enabled. "
                   << "Rebuild with -DFAISS_ENABLE_COMPRESSED_STORAGE=ON" << std::endl;

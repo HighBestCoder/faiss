@@ -14,11 +14,11 @@ IndexHNSWCompressed::IndexHNSWCompressed() = default;
 IndexHNSWCompressed::IndexHNSWCompressed(
         int d,
         int M,
-        size_t block_size,
+        bool use_cache,
         size_t cache_size,
         MetricType metric)
         : IndexHNSW(
-                  new IndexFlatCompressed(d, block_size, cache_size, metric),
+                  new IndexFlatCompressed(d, use_cache, cache_size, metric),
                   M) {
     own_fields = true;
 }
@@ -27,14 +27,14 @@ IndexHNSWCompressed::IndexHNSWCompressed(
         int d,
         int M,
         std::unique_ptr<CompressionCodec> codec,
-        size_t block_size,
+        bool use_cache,
         size_t cache_size,
         MetricType metric)
         : IndexHNSW(
                   new IndexFlatCompressed(
                           d,
                           std::move(codec),
-                          block_size,
+                          use_cache,
                           cache_size,
                           metric),
                   M) {
@@ -45,14 +45,14 @@ IndexHNSWCompressedLZ4::IndexHNSWCompressedLZ4(
         int d,
         int M,
         int lz4_acceleration,
-        size_t block_size,
+        bool use_cache,
         size_t cache_size,
         MetricType metric)
         : IndexHNSWCompressed(
                   d,
                   M,
                   std::make_unique<LZ4Codec>(lz4_acceleration),
-                  block_size,
+                  use_cache,
                   cache_size,
                   metric) {}
 
@@ -60,14 +60,14 @@ IndexHNSWCompressedZSTD::IndexHNSWCompressedZSTD(
         int d,
         int M,
         int zstd_level,
-        size_t block_size,
+        bool use_cache,
         size_t cache_size,
         MetricType metric)
         : IndexHNSWCompressed(
                   d,
                   M,
                   std::make_unique<ZSTDCodec>(zstd_level),
-                  block_size,
+                  use_cache,
                   cache_size,
                   metric) {}
 
