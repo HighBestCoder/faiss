@@ -805,6 +805,291 @@ std::vector<faiss::idx_t> generate_bfs_permutation(const faiss::HNSW& hnsw) {
     return perm;
 }
 
+inline size_t get_node_degree(const faiss::HNSW& hnsw, faiss::HNSW::storage_idx_t node) {
+    size_t begin, end;
+    hnsw.neighbor_range(node, 0, &begin, &end);
+    size_t degree = 0;
+    for (size_t j = begin; j < end; j++) {
+        if (hnsw.neighbors[j] >= 0) degree++;
+    }
+    return degree;
+}
+
+std::vector<size_t> precompute_degrees(const faiss::HNSW& hnsw) {
+    size_t ntotal = hnsw.levels.size();
+    std::vector<size_t> degrees(ntotal);
+    for (size_t i = 0; i < ntotal; i++) {
+        degrees[i] = get_node_degree(hnsw, i);
+    }
+    return degrees;
+}
+
+// Reverse Cuthill-McKee (RCM) algorithm
+// Minimizes graph bandwidth - commonly used for sparse matrix reordering
+// Algorithm:
+// 1. Find a peripheral node (node with small degree at graph "edge")
+// 2. BFS from this node, but sort neighbors by degree (ascending)
+// 3. Reverse the resulting order
+std::vector<faiss::idx_t> generate_rcm_permutation(const faiss::HNSW& hnsw) {
+    size_t ntotal = hnsw.levels.size();
+    std::vector<faiss::idx_t> perm;
+    perm.reserve(ntotal);
+    
+    std::vector<bool> visited(ntotal, false);
+    
+    auto degrees = precompute_degrees(hnsw);
+    
+    faiss::HNSW::storage_idx_t start_node = 0;
+    size_t min_degree = std::numeric_limits<size_t>::max();
+    
+    for (size_t i = 0; i < ntotal; i++) {
+        if (degrees[i] > 0 && degrees[i] < min_degree) {
+            min_degree = degrees[i];
+            start_node = i;
+        }
+    }
+    
+    {
+        std::deque<faiss::HNSW::storage_idx_t> queue;
+        std::vector<bool> temp_visited(ntotal, false);
+        queue.push_back(start_node);
+        temp_visited[start_node] = true;
+        faiss::HNSW::storage_idx_t last_node = start_node;
+        
+        while (!queue.empty()) {
+            last_node = queue.front();
+            queue.pop_front();
+            
+            size_t begin, end;
+            hnsw.neighbor_range(last_node, 0, &begin, &end);
+            for (size_t j = begin; j < end; j++) {
+                faiss::HNSW::storage_idx_t neighbor = hnsw.neighbors[j];
+                if (neighbor >= 0 && !temp_visited[neighbor]) {
+                    temp_visited[neighbor] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        start_node = last_node;
+    }
+    
+    std::deque<faiss::HNSW::storage_idx_t> queue;
+    queue.push_back(start_node);
+    visited[start_node] = true;
+    
+    while (!queue.empty()) {
+        faiss::HNSW::storage_idx_t current = queue.front();
+        queue.pop_front();
+        perm.push_back(current);
+        
+        std::vector<std::pair<size_t, faiss::HNSW::storage_idx_t>> neighbor_degrees;
+        size_t begin, end;
+        hnsw.neighbor_range(current, 0, &begin, &end);
+        
+        for (size_t j = begin; j < end; j++) {
+            faiss::HNSW::storage_idx_t neighbor = hnsw.neighbors[j];
+            if (neighbor >= 0 && !visited[neighbor]) {
+                visited[neighbor] = true;
+                neighbor_degrees.push_back({degrees[neighbor], neighbor});
+            }
+        }
+        
+        std::sort(neighbor_degrees.begin(), neighbor_degrees.end());
+        
+        for (auto& p : neighbor_degrees) {
+            queue.push_back(p.second);
+        }
+    }
+    
+    for (size_t i = 0; i < ntotal; i++) {
+        if (!visited[i]) {
+            perm.push_back(i);
+        }
+    }
+    
+    // REVERSE the permutation (the "R" in RCM)
+    std::reverse(perm.begin(), perm.end());
+    
+    return perm;
+}
+
+// DFS-based ordering - better for tree-like structures
+std::vector<faiss::idx_t> generate_dfs_permutation(const faiss::HNSW& hnsw) {
+    size_t ntotal = hnsw.levels.size();
+    std::vector<faiss::idx_t> perm;
+    perm.reserve(ntotal);
+    
+    std::vector<bool> visited(ntotal, false);
+    std::vector<faiss::HNSW::storage_idx_t> stack;
+    
+    if (hnsw.entry_point >= 0) {
+        stack.push_back(hnsw.entry_point);
+    }
+    
+    while (!stack.empty()) {
+        faiss::HNSW::storage_idx_t current = stack.back();
+        stack.pop_back();
+        
+        if (visited[current]) continue;
+        visited[current] = true;
+        perm.push_back(current);
+        
+        // Get neighbors and push in reverse order for consistent DFS
+        std::vector<faiss::HNSW::storage_idx_t> neighbors;
+        size_t begin, end;
+        hnsw.neighbor_range(current, 0, &begin, &end);
+        
+        for (size_t j = begin; j < end; j++) {
+            faiss::HNSW::storage_idx_t neighbor = hnsw.neighbors[j];
+            if (neighbor >= 0 && !visited[neighbor]) {
+                neighbors.push_back(neighbor);
+            }
+        }
+        
+        // Push in reverse to process first neighbor first
+        for (auto it = neighbors.rbegin(); it != neighbors.rend(); ++it) {
+            stack.push_back(*it);
+        }
+    }
+    
+    // Add any disconnected nodes
+    for (size_t i = 0; i < ntotal; i++) {
+        if (!visited[i]) {
+            perm.push_back(i);
+        }
+    }
+    
+    return perm;
+}
+
+// Cluster-based ordering: place each node's neighbors consecutively in memory
+// This optimizes for the common case where we access a node and then its neighbors
+std::vector<faiss::idx_t> generate_cluster_permutation(const faiss::HNSW& hnsw) {
+    size_t ntotal = hnsw.levels.size();
+    std::vector<faiss::idx_t> perm;
+    perm.reserve(ntotal);
+    
+    std::vector<bool> visited(ntotal, false);
+    
+    // Process nodes in order of their level (higher levels first = more important)
+    std::vector<std::pair<int, faiss::HNSW::storage_idx_t>> nodes_by_level;
+    for (size_t i = 0; i < ntotal; i++) {
+        nodes_by_level.push_back({hnsw.levels[i], i});
+    }
+    std::sort(nodes_by_level.rbegin(), nodes_by_level.rend());  // Descending by level
+    
+    for (auto& p : nodes_by_level) {
+        faiss::HNSW::storage_idx_t node = p.second;
+        
+        if (visited[node]) continue;
+        
+        // Add this node
+        visited[node] = true;
+        perm.push_back(node);
+        
+        // Add all its unvisited neighbors immediately after
+        size_t begin, end;
+        hnsw.neighbor_range(node, 0, &begin, &end);
+        
+        for (size_t j = begin; j < end; j++) {
+            faiss::HNSW::storage_idx_t neighbor = hnsw.neighbors[j];
+            if (neighbor >= 0 && !visited[neighbor]) {
+                visited[neighbor] = true;
+                perm.push_back(neighbor);
+            }
+        }
+    }
+    
+    return perm;
+}
+
+// Weighted-access ordering: nodes frequently accessed together are placed together
+// Uses a heuristic based on graph structure and levels
+std::vector<faiss::idx_t> generate_weighted_permutation(const faiss::HNSW& hnsw) {
+    size_t ntotal = hnsw.levels.size();
+    
+    auto degrees = precompute_degrees(hnsw);
+    
+    std::vector<std::pair<double, faiss::HNSW::storage_idx_t>> scores;
+    scores.reserve(ntotal);
+    for (size_t i = 0; i < ntotal; i++) {
+        double level_weight = 1.0 + hnsw.levels[i];
+        scores.push_back({level_weight * degrees[i], i});
+    }
+    
+    std::sort(scores.rbegin(), scores.rend());
+    
+    std::vector<faiss::idx_t> perm;
+    perm.reserve(ntotal);
+    std::vector<bool> visited(ntotal, false);
+    
+    for (auto& p : scores) {
+        faiss::HNSW::storage_idx_t node = p.second;
+        if (visited[node]) continue;
+        
+        visited[node] = true;
+        perm.push_back(node);
+        
+        std::vector<std::pair<double, faiss::HNSW::storage_idx_t>> neighbor_scores;
+        size_t begin, end;
+        hnsw.neighbor_range(node, 0, &begin, &end);
+        
+        for (size_t j = begin; j < end; j++) {
+            faiss::HNSW::storage_idx_t neighbor = hnsw.neighbors[j];
+            if (neighbor >= 0 && !visited[neighbor]) {
+                double nlevel = 1.0 + hnsw.levels[neighbor];
+                neighbor_scores.push_back({nlevel * degrees[neighbor], neighbor});
+            }
+        }
+        
+        std::sort(neighbor_scores.rbegin(), neighbor_scores.rend());
+        for (auto& np : neighbor_scores) {
+            if (!visited[np.second]) {
+                visited[np.second] = true;
+                perm.push_back(np.second);
+            }
+        }
+    }
+    
+    return perm;
+}
+
+enum class ReorderStrategy {
+    BFS,
+    RCM,      // Reverse Cuthill-McKee
+    DFS,
+    CLUSTER,  // Cluster-based (neighbors together)
+    WEIGHTED  // Weighted by access patterns
+};
+
+std::vector<faiss::idx_t> generate_permutation(const faiss::HNSW& hnsw, ReorderStrategy strategy) {
+    switch (strategy) {
+        case ReorderStrategy::BFS:
+            return generate_bfs_permutation(hnsw);
+        case ReorderStrategy::RCM:
+            return generate_rcm_permutation(hnsw);
+        case ReorderStrategy::DFS:
+            return generate_dfs_permutation(hnsw);
+        case ReorderStrategy::CLUSTER:
+            return generate_cluster_permutation(hnsw);
+        case ReorderStrategy::WEIGHTED:
+            return generate_weighted_permutation(hnsw);
+        default:
+            return generate_bfs_permutation(hnsw);
+    }
+}
+
+const char* strategy_name(ReorderStrategy s) {
+    switch (s) {
+        case ReorderStrategy::BFS: return "BFS";
+        case ReorderStrategy::RCM: return "RCM";
+        case ReorderStrategy::DFS: return "DFS";
+        case ReorderStrategy::CLUSTER: return "Cluster";
+        case ReorderStrategy::WEIGHTED: return "Weighted";
+        default: return "Unknown";
+    }
+}
+
 std::vector<BenchmarkResult> benchmark_faiss_hnsw(
         const float* data,
         const float* queries,
@@ -897,12 +1182,13 @@ std::vector<BenchmarkResult> benchmark_faiss_cache_aligned(
     return results;
 }
 
-std::vector<BenchmarkResult> benchmark_faiss_graph_reorder(
+std::vector<BenchmarkResult> benchmark_faiss_reorder_strategy(
         const float* data,
         const float* queries,
         const faiss::idx_t* ground_truth,
         size_t nb, size_t nq, size_t d, size_t k,
-        int M, int efConstruction, const std::vector<int>& efSearchValues) {
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        ReorderStrategy strategy) {
     std::vector<BenchmarkResult> results;
 
     size_t mem_before = get_memory_usage_kb();
@@ -912,7 +1198,7 @@ std::vector<BenchmarkResult> benchmark_faiss_graph_reorder(
     index.hnsw.efConstruction = efConstruction;
     index.add(nb, data);
     
-    auto perm = generate_bfs_permutation(index.hnsw);
+    auto perm = generate_permutation(index.hnsw, strategy);
     index.permute_entries(perm.data());
     
     double t1 = get_time_sec();
@@ -931,9 +1217,11 @@ std::vector<BenchmarkResult> benchmark_faiss_graph_reorder(
     std::vector<float> distances(nq * k);
     std::vector<faiss::idx_t> labels(nq * k);
 
+    std::string name = std::string("FAISS Reorder-") + strategy_name(strategy);
+    
     for (int efSearch : efSearchValues) {
         BenchmarkResult result;
-        result.name = "FAISS GraphReorder";
+        result.name = name;
         result.ef_search = efSearch;
         result.build_time_sec = build_time;
         result.memory_kb = memory_kb;
@@ -952,6 +1240,33 @@ std::vector<BenchmarkResult> benchmark_faiss_graph_reorder(
     }
 
     return results;
+}
+
+std::vector<BenchmarkResult> benchmark_all_reorder_strategies(
+        const float* data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb, size_t nq, size_t d, size_t k,
+        int M, int efConstruction, const std::vector<int>& efSearchValues) {
+    std::vector<BenchmarkResult> all_results;
+    
+    std::vector<ReorderStrategy> strategies = {
+        ReorderStrategy::BFS,
+        ReorderStrategy::RCM,
+        ReorderStrategy::DFS,
+        ReorderStrategy::CLUSTER,
+        ReorderStrategy::WEIGHTED
+    };
+    
+    for (auto strategy : strategies) {
+        std::cout << "  Testing reorder strategy: " << strategy_name(strategy) << std::endl;
+        auto results = benchmark_faiss_reorder_strategy(
+            data, queries, ground_truth, nb, nq, d, k,
+            M, efConstruction, efSearchValues, strategy);
+        all_results.insert(all_results.end(), results.begin(), results.end());
+    }
+    
+    return all_results;
 }
 
 std::vector<BenchmarkResult> benchmark_faiss_chunked(
@@ -1305,8 +1620,8 @@ int main(int argc, char* argv[]) {
     }
     std::cout << std::string(105, '-') << std::endl;
 
-    std::cout << "Building and benchmarking FAISS GraphReorder..." << std::endl;
-    auto results_reorder = benchmark_faiss_graph_reorder(
+    std::cout << "Building and benchmarking FAISS Reorder Strategies..." << std::endl;
+    auto results_reorder = benchmark_all_reorder_strategies(
             database.data(), queries.data(), ground_truth.data(),
             nb, nq, d, k, M, efConstruction, efSearchValues);
     for (const auto& r : results_reorder) {
