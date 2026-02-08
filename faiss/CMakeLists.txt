@@ -19,6 +19,7 @@ set(FAISS_SRC
   IndexFlat.cpp
   IndexFlatCodes.cpp
   IndexFlatShared.cpp
+  HNSWReorder.cpp
   IndexHNSW.cpp
   IndexIDMap.cpp
   IndexIVF.cpp
@@ -146,6 +147,7 @@ set(FAISS_HEADERS
   IndexFlat.h
   IndexFlatCodes.h
   IndexFlatShared.h
+  HNSWReorder.h
   IndexHNSW.h
   IndexIDMap.h
   IndexIVF.h
