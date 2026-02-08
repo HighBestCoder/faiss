@@ -731,6 +731,9 @@ void compact_store(IndexFlatShared& index) {
     }
     store.codes = std::move(compacted);
 
+    // Hint THP for the freshly compacted contiguous buffer
+    store.enable_hugepages();
+
     for (size_t i = 0; i < n; i++) {
         id_map[i] = i;
     }

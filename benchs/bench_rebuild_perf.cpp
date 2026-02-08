@@ -646,6 +646,9 @@ int main(int argc, char* argv[]) {
         double fresh_build = get_time_sec() - t0;
         printf("  Build: %.2fs\n", fresh_build);
 
+        // Hint THP for the fully populated store
+        store->enable_hugepages();
+
         shared_index->hnsw.efSearch = efSearch;
         sr_fresh = measure_search(
                 *shared_index, xq, nq, k, ground_truth_all.data());
@@ -737,6 +740,7 @@ int main(int argc, char* argv[]) {
         store->codes = original_store_codes;
         store->ntotal_store = original_ntotal_store;
         store->free_list = original_free_list;
+        store->enable_hugepages();
 
         auto* old_shared =
                 dynamic_cast<faiss::IndexFlatShared*>(shared_index->storage);

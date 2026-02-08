@@ -12,6 +12,10 @@
 #include <memory>
 #include <vector>
 
+#ifdef __linux__
+#include <sys/mman.h>
+#endif
+
 #include <faiss/Index.h>
 #include <faiss/impl/maybe_owned_vector.h>
 
@@ -75,6 +79,24 @@ struct SharedVectorStore : MaybeOwnedVectorOwner {
     /// Get float vector pointer at slot i
     const float* get_vector(idx_t i) const {
         return reinterpret_cast<const float*>(get_code(i));
+    }
+
+    /// Hint the OS to back codes memory with transparent huge pages.
+    /// Call after bulk allocation or compaction when the buffer is stable.
+    /// No-op on non-Linux platforms or if madvise fails.
+    void enable_hugepages() {
+#ifdef __linux__
+        if (codes.empty())
+            return;
+        void* ptr = codes.data();
+        size_t len = codes.size();
+        // Align down to page boundary (4KB)
+        uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+        uintptr_t aligned = addr & ~(uintptr_t(4095));
+        size_t aligned_len = len + (addr - aligned);
+        // MADV_HUGEPAGE hints the kernel to use THP for this range
+        madvise(reinterpret_cast<void*>(aligned), aligned_len, MADV_HUGEPAGE);
+#endif
     }
 };
 
