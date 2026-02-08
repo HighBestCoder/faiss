@@ -35,12 +35,19 @@ if(ENABLE_VSAG)
   target_link_libraries(bench_hnsw_compare PRIVATE ${VSAG_LIBRARY})
 endif()
 
+add_executable(bench_rebuild_perf EXCLUDE_FROM_ALL bench_rebuild_perf.cpp)
+target_link_libraries(bench_rebuild_perf PRIVATE faiss ${BLAS_LIBRARIES} ${LAPACK_LIBRARIES} OpenMP::OpenMP_CXX)
+
 option(ENABLE_HDF5 "Enable HDF5 dataset loading" OFF)
 if(ENABLE_HDF5)
   find_package(HDF5 REQUIRED COMPONENTS C)
   target_compile_definitions(bench_hnsw_compare PRIVATE ENABLE_HDF5)
   target_include_directories(bench_hnsw_compare PRIVATE ${HDF5_INCLUDE_DIRS})
   target_link_libraries(bench_hnsw_compare PRIVATE ${HDF5_C_LIBRARIES})
+
+  target_compile_definitions(bench_rebuild_perf PRIVATE ENABLE_HDF5)
+  target_include_directories(bench_rebuild_perf PRIVATE ${HDF5_INCLUDE_DIRS})
+  target_link_libraries(bench_rebuild_perf PRIVATE ${HDF5_C_LIBRARIES})
 endif()
 
 if(FAISS_ENABLE_COMPRESSED_STORAGE)
