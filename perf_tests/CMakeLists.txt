@@ -37,6 +37,7 @@ set(FAISS_PERF_TEST_SRC
   bench_scalar_quantizer_decode.cpp
   bench_scalar_quantizer_distance.cpp
   bench_scalar_quantizer_encode.cpp
+  bench_shared_store.cpp
 )
 foreach(bench ${FAISS_PERF_TEST_SRC})
   get_filename_component(bench_exec ${bench} NAME_WE)

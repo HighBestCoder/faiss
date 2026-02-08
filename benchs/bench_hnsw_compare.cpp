@@ -108,7 +108,8 @@ std::vector<faiss::idx_t> compute_ground_truth(
         size_t nq,
         size_t nb,
         size_t d,
-        size_t k) {
+        size_t k,
+        faiss::MetricType metric = faiss::METRIC_L2) {
     std::vector<faiss::idx_t> gt(nq * k);
 
 #pragma omp parallel for
@@ -118,15 +119,30 @@ std::vector<faiss::idx_t> compute_ground_truth(
 
         for (size_t i = 0; i < nb; i++) {
             const float* vec = database + i * d;
-            float dist = faiss::fvec_L2sqr(query, vec, d);
+            float dist;
+            if (metric == faiss::METRIC_INNER_PRODUCT) {
+                dist = faiss::fvec_inner_product(query, vec, d);
+            } else {
+                dist = faiss::fvec_L2sqr(query, vec, d);
+            }
             distances[i] = {dist, static_cast<faiss::idx_t>(i)};
         }
 
-        std::partial_sort(
-                distances.begin(),
-                distances.begin() + k,
-                distances.end(),
-                [](auto& a, auto& b) { return a.first < b.first; });
+        // For L2: smaller is better (ascending sort)
+        // For IP: larger is better (descending sort)
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            std::partial_sort(
+                    distances.begin(),
+                    distances.begin() + k,
+                    distances.end(),
+                    [](auto& a, auto& b) { return a.first > b.first; });
+        } else {
+            std::partial_sort(
+                    distances.begin(),
+                    distances.begin() + k,
+                    distances.end(),
+                    [](auto& a, auto& b) { return a.first < b.first; });
+        }
 
         for (size_t i = 0; i < k; i++) {
             gt[q * k + i] = distances[i].second;
@@ -247,8 +263,8 @@ public:
     size_t aligned_vector_size;
     std::vector<float*> vectors;
     
-    explicit IndexCacheAlignedFlat(faiss::idx_t dim)
-            : faiss::Index(dim, faiss::METRIC_L2), d(dim) {
+    explicit IndexCacheAlignedFlat(faiss::idx_t dim, faiss::MetricType metric = faiss::METRIC_L2)
+            : faiss::Index(dim, metric), d(dim) {
         vector_size_bytes = d * sizeof(float);
         aligned_vector_size = ((vector_size_bytes + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE) * CACHE_LINE_SIZE;
     }
@@ -294,23 +310,30 @@ public:
     faiss::DistanceComputer* get_distance_computer() const override;
 };
 
-struct CacheAlignedFlatL2Dis : faiss::DistanceComputer {
+struct CacheAlignedFlatDis : faiss::DistanceComputer {
     const IndexCacheAlignedFlat& storage;
     size_t d;
+    faiss::MetricType metric;
     std::vector<float> q_copy;
 
-    explicit CacheAlignedFlatL2Dis(const IndexCacheAlignedFlat& s)
-            : storage(s), d(s.d), q_copy(s.d) {}
+    explicit CacheAlignedFlatDis(const IndexCacheAlignedFlat& s)
+            : storage(s), d(s.d), metric(s.metric_type), q_copy(s.d) {}
 
     void set_query(const float* x) override {
         std::memcpy(q_copy.data(), x, d * sizeof(float));
     }
 
     float operator()(faiss::idx_t i) override {
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            return faiss::fvec_inner_product(q_copy.data(), storage.get_vector(i), d);
+        }
         return faiss::fvec_L2sqr(q_copy.data(), storage.get_vector(i), d);
     }
 
     float symmetric_dis(faiss::idx_t i, faiss::idx_t j) override {
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            return faiss::fvec_inner_product(storage.get_vector(i), storage.get_vector(j), d);
+        }
         return faiss::fvec_L2sqr(storage.get_vector(i), storage.get_vector(j), d);
     }
     
@@ -323,14 +346,21 @@ struct CacheAlignedFlatL2Dis : faiss::DistanceComputer {
             float& dis1,
             float& dis2,
             float& dis3) override {
-        faiss::fvec_L2sqr_batch_4(
-                q_copy.data(),
-                storage.get_vector(idx0),
-                storage.get_vector(idx1),
-                storage.get_vector(idx2),
-                storage.get_vector(idx3),
-                d,
-                dis0, dis1, dis2, dis3);
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            dis0 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx0), d);
+            dis1 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx1), d);
+            dis2 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx2), d);
+            dis3 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx3), d);
+        } else {
+            faiss::fvec_L2sqr_batch_4(
+                    q_copy.data(),
+                    storage.get_vector(idx0),
+                    storage.get_vector(idx1),
+                    storage.get_vector(idx2),
+                    storage.get_vector(idx3),
+                    d,
+                    dis0, dis1, dis2, dis3);
+        }
     }
 
     void distances_batch_8(
@@ -350,37 +380,49 @@ struct CacheAlignedFlatL2Dis : faiss::DistanceComputer {
             float& dis5,
             float& dis6,
             float& dis7) override {
-        faiss::fvec_L2sqr_batch_8(
-                q_copy.data(),
-                storage.get_vector(idx0),
-                storage.get_vector(idx1),
-                storage.get_vector(idx2),
-                storage.get_vector(idx3),
-                storage.get_vector(idx4),
-                storage.get_vector(idx5),
-                storage.get_vector(idx6),
-                storage.get_vector(idx7),
-                d,
-                dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            dis0 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx0), d);
+            dis1 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx1), d);
+            dis2 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx2), d);
+            dis3 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx3), d);
+            dis4 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx4), d);
+            dis5 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx5), d);
+            dis6 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx6), d);
+            dis7 = faiss::fvec_inner_product(q_copy.data(), storage.get_vector(idx7), d);
+        } else {
+            faiss::fvec_L2sqr_batch_8(
+                    q_copy.data(),
+                    storage.get_vector(idx0),
+                    storage.get_vector(idx1),
+                    storage.get_vector(idx2),
+                    storage.get_vector(idx3),
+                    storage.get_vector(idx4),
+                    storage.get_vector(idx5),
+                    storage.get_vector(idx6),
+                    storage.get_vector(idx7),
+                    d,
+                    dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
+        }
     }
 };
 
 faiss::DistanceComputer* IndexCacheAlignedFlat::get_distance_computer() const {
-    return new CacheAlignedFlatL2Dis(*this);
+    return new CacheAlignedFlatDis(*this);
 }
 
 struct IndexChunkedFlat;
 
-struct ChunkedFlatL2Dis : faiss::DistanceComputer {
+struct ChunkedFlatDis : faiss::DistanceComputer {
     const IndexChunkedFlat& storage;
     size_t d;
+    faiss::MetricType metric;
     const float* q = nullptr;
     
     size_t chunk_shift;
     size_t chunk_mask;
     const std::vector<float*>& chunk_ptrs;
 
-    explicit ChunkedFlatL2Dis(const IndexChunkedFlat& s);
+    explicit ChunkedFlatDis(const IndexChunkedFlat& s);
 
     void set_query(const float* x) override {
         q = x;
@@ -391,10 +433,16 @@ struct ChunkedFlatL2Dis : faiss::DistanceComputer {
     }
 
     float operator()(faiss::idx_t i) override {
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            return faiss::fvec_inner_product(q, get_vec(i), d);
+        }
         return faiss::fvec_L2sqr(q, get_vec(i), d);
     }
 
     float symmetric_dis(faiss::idx_t i, faiss::idx_t j) override {
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            return faiss::fvec_inner_product(get_vec(i), get_vec(j), d);
+        }
         return faiss::fvec_L2sqr(get_vec(i), get_vec(j), d);
     }
     
@@ -424,7 +472,14 @@ struct ChunkedFlatL2Dis : faiss::DistanceComputer {
         const float* v3 = get_vec(idx3);
         prefetch_L1(v3 + 64);
         
-        faiss::fvec_L2sqr_batch_4(q, v0, v1, v2, v3, d, dis0, dis1, dis2, dis3);
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            dis0 = faiss::fvec_inner_product(q, v0, d);
+            dis1 = faiss::fvec_inner_product(q, v1, d);
+            dis2 = faiss::fvec_inner_product(q, v2, d);
+            dis3 = faiss::fvec_inner_product(q, v3, d);
+        } else {
+            faiss::fvec_L2sqr_batch_4(q, v0, v1, v2, v3, d, dis0, dis1, dis2, dis3);
+        }
     }
 
     void distances_batch_8(
@@ -470,9 +525,20 @@ struct ChunkedFlatL2Dis : faiss::DistanceComputer {
         const float* v7 = get_vec(idx7);
         prefetch_L1(v7 + 64);
         
-        faiss::fvec_L2sqr_batch_8(
-                q, v0, v1, v2, v3, v4, v5, v6, v7, d,
-                dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            dis0 = faiss::fvec_inner_product(q, v0, d);
+            dis1 = faiss::fvec_inner_product(q, v1, d);
+            dis2 = faiss::fvec_inner_product(q, v2, d);
+            dis3 = faiss::fvec_inner_product(q, v3, d);
+            dis4 = faiss::fvec_inner_product(q, v4, d);
+            dis5 = faiss::fvec_inner_product(q, v5, d);
+            dis6 = faiss::fvec_inner_product(q, v6, d);
+            dis7 = faiss::fvec_inner_product(q, v7, d);
+        } else {
+            faiss::fvec_L2sqr_batch_8(
+                    q, v0, v1, v2, v3, v4, v5, v6, v7, d,
+                    dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
+        }
     }
 };
 
@@ -485,8 +551,8 @@ struct IndexChunkedFlat : faiss::Index {
     std::vector<std::vector<float>> chunks;
     std::vector<float*> chunk_ptrs;
 
-    explicit IndexChunkedFlat(faiss::idx_t dim, size_t chunk_size = 1024)
-            : faiss::Index(dim, faiss::METRIC_L2), d(dim), chunk_element_size(chunk_size) {
+    explicit IndexChunkedFlat(faiss::idx_t dim, size_t chunk_size = 1024, faiss::MetricType metric = faiss::METRIC_L2)
+            : faiss::Index(dim, metric), d(dim), chunk_element_size(chunk_size) {
         chunk_shift = 0;
         size_t tmp = chunk_size;
         while (tmp > 1) {
@@ -535,28 +601,29 @@ struct IndexChunkedFlat : faiss::Index {
     }
 
     faiss::DistanceComputer* get_distance_computer() const override {
-        return new ChunkedFlatL2Dis(*this);
+        return new ChunkedFlatDis(*this);
     }
 };
 
-ChunkedFlatL2Dis::ChunkedFlatL2Dis(const IndexChunkedFlat& s)
-        : storage(s), d(s.d), chunk_shift(s.chunk_shift), 
+ChunkedFlatDis::ChunkedFlatDis(const IndexChunkedFlat& s)
+        : storage(s), d(s.d), metric(s.metric_type), chunk_shift(s.chunk_shift), 
           chunk_mask(s.chunk_mask), chunk_ptrs(s.chunk_ptrs) {}
 
 #ifdef __linux__
 
 struct IndexHugepageChunkedFlat;
 
-struct HugepageFlatL2Dis : faiss::DistanceComputer {
+struct HugepageFlatDis : faiss::DistanceComputer {
     const IndexHugepageChunkedFlat& storage;
     size_t d;
+    faiss::MetricType metric;
     const float* q = nullptr;
     
     size_t chunk_shift;
     size_t chunk_mask;
     float* const* chunk_ptrs;
 
-    explicit HugepageFlatL2Dis(const IndexHugepageChunkedFlat& s);
+    explicit HugepageFlatDis(const IndexHugepageChunkedFlat& s);
 
     void set_query(const float* x) override {
         q = x;
@@ -567,10 +634,16 @@ struct HugepageFlatL2Dis : faiss::DistanceComputer {
     }
 
     float operator()(faiss::idx_t i) override {
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            return faiss::fvec_inner_product(q, get_vec(i), d);
+        }
         return faiss::fvec_L2sqr(q, get_vec(i), d);
     }
 
     float symmetric_dis(faiss::idx_t i, faiss::idx_t j) override {
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            return faiss::fvec_inner_product(get_vec(i), get_vec(j), d);
+        }
         return faiss::fvec_L2sqr(get_vec(i), get_vec(j), d);
     }
     
@@ -600,7 +673,14 @@ struct HugepageFlatL2Dis : faiss::DistanceComputer {
         const float* v3 = get_vec(idx3);
         prefetch_L1(v3 + 64);
         
-        faiss::fvec_L2sqr_batch_4(q, v0, v1, v2, v3, d, dis0, dis1, dis2, dis3);
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            dis0 = faiss::fvec_inner_product(q, v0, d);
+            dis1 = faiss::fvec_inner_product(q, v1, d);
+            dis2 = faiss::fvec_inner_product(q, v2, d);
+            dis3 = faiss::fvec_inner_product(q, v3, d);
+        } else {
+            faiss::fvec_L2sqr_batch_4(q, v0, v1, v2, v3, d, dis0, dis1, dis2, dis3);
+        }
     }
 
     void distances_batch_8(
@@ -646,9 +726,20 @@ struct HugepageFlatL2Dis : faiss::DistanceComputer {
         const float* v7 = get_vec(idx7);
         prefetch_L1(v7 + 64);
         
-        faiss::fvec_L2sqr_batch_8(
-                q, v0, v1, v2, v3, v4, v5, v6, v7, d,
-                dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            dis0 = faiss::fvec_inner_product(q, v0, d);
+            dis1 = faiss::fvec_inner_product(q, v1, d);
+            dis2 = faiss::fvec_inner_product(q, v2, d);
+            dis3 = faiss::fvec_inner_product(q, v3, d);
+            dis4 = faiss::fvec_inner_product(q, v4, d);
+            dis5 = faiss::fvec_inner_product(q, v5, d);
+            dis6 = faiss::fvec_inner_product(q, v6, d);
+            dis7 = faiss::fvec_inner_product(q, v7, d);
+        } else {
+            faiss::fvec_L2sqr_batch_8(
+                    q, v0, v1, v2, v3, v4, v5, v6, v7, d,
+                    dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
+        }
     }
 };
 
@@ -664,8 +755,8 @@ struct IndexHugepageChunkedFlat : faiss::Index {
 
     static constexpr size_t HUGEPAGE_SIZE = 2 * 1024 * 1024;
 
-    explicit IndexHugepageChunkedFlat(faiss::idx_t dim, size_t chunk_size = 16384, bool try_hugepages = true)
-            : faiss::Index(dim, faiss::METRIC_L2), d(dim), 
+    explicit IndexHugepageChunkedFlat(faiss::idx_t dim, size_t chunk_size = 16384, bool try_hugepages = true, faiss::MetricType metric = faiss::METRIC_L2)
+            : faiss::Index(dim, metric), d(dim), 
               chunk_element_size(chunk_size), use_hugepages(try_hugepages) {
         chunk_shift = 0;
         size_t tmp = chunk_size;
@@ -756,12 +847,285 @@ struct IndexHugepageChunkedFlat : faiss::Index {
     }
 
     faiss::DistanceComputer* get_distance_computer() const override {
-        return new HugepageFlatL2Dis(*this);
+        return new HugepageFlatDis(*this);
     }
 };
 
-HugepageFlatL2Dis::HugepageFlatL2Dis(const IndexHugepageChunkedFlat& s)
-        : storage(s), d(s.d), chunk_shift(s.chunk_shift), 
+HugepageFlatDis::HugepageFlatDis(const IndexHugepageChunkedFlat& s)
+        : storage(s), d(s.d), metric(s.metric_type), chunk_shift(s.chunk_shift), 
+          chunk_mask(s.chunk_mask), chunk_ptrs(s.chunk_ptrs.data()) {}
+
+// =============================================================================
+// Madvise-based Transparent Hugepage Storage (THP)
+// =============================================================================
+// Uses madvise(MADV_HUGEPAGE) instead of MAP_HUGETLB
+// Benefits:
+// - Keeps small chunk sizes for better cache locality
+// - Gets TLB benefits from transparent hugepages when kernel decides to use them
+// - No need for preallocated hugepage pool
+// - Best of both worlds: small chunks + TLB optimization
+// =============================================================================
+
+struct IndexMadviseHugepageFlat;
+
+struct MadviseHugepageFlatDis : faiss::DistanceComputer {
+    const IndexMadviseHugepageFlat& storage;
+    size_t d;
+    faiss::MetricType metric;
+    const float* q = nullptr;
+    
+    size_t chunk_shift;
+    size_t chunk_mask;
+    float* const* chunk_ptrs;
+
+    explicit MadviseHugepageFlatDis(const IndexMadviseHugepageFlat& s);
+
+    void set_query(const float* x) override {
+        q = x;
+    }
+
+    FAISS_ALWAYS_INLINE const float* get_vec(faiss::idx_t i) const {
+        return chunk_ptrs[i >> chunk_shift] + (i & chunk_mask) * d;
+    }
+
+    float operator()(faiss::idx_t i) override {
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            return faiss::fvec_inner_product(q, get_vec(i), d);
+        }
+        return faiss::fvec_L2sqr(q, get_vec(i), d);
+    }
+
+    float symmetric_dis(faiss::idx_t i, faiss::idx_t j) override {
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            return faiss::fvec_inner_product(get_vec(i), get_vec(j), d);
+        }
+        return faiss::fvec_L2sqr(get_vec(i), get_vec(j), d);
+    }
+    
+    void distances_batch_4(
+            const faiss::idx_t idx0,
+            const faiss::idx_t idx1,
+            const faiss::idx_t idx2,
+            const faiss::idx_t idx3,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3) override {
+        prefetch_L2(get_vec(idx0));
+        prefetch_L2(get_vec(idx1));
+        prefetch_L2(get_vec(idx2));
+        prefetch_L2(get_vec(idx3));
+        
+        const float* v0 = get_vec(idx0);
+        prefetch_L1(v0 + 64);
+        const float* v1 = get_vec(idx1);
+        prefetch_L1(v1 + 64);
+        const float* v2 = get_vec(idx2);
+        prefetch_L1(v2 + 64);
+        const float* v3 = get_vec(idx3);
+        prefetch_L1(v3 + 64);
+        
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            dis0 = faiss::fvec_inner_product(q, v0, d);
+            dis1 = faiss::fvec_inner_product(q, v1, d);
+            dis2 = faiss::fvec_inner_product(q, v2, d);
+            dis3 = faiss::fvec_inner_product(q, v3, d);
+        } else {
+            faiss::fvec_L2sqr_batch_4(q, v0, v1, v2, v3, d, dis0, dis1, dis2, dis3);
+        }
+    }
+
+    void distances_batch_8(
+            const faiss::idx_t idx0,
+            const faiss::idx_t idx1,
+            const faiss::idx_t idx2,
+            const faiss::idx_t idx3,
+            const faiss::idx_t idx4,
+            const faiss::idx_t idx5,
+            const faiss::idx_t idx6,
+            const faiss::idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) override {
+        prefetch_L2(get_vec(idx0));
+        prefetch_L2(get_vec(idx1));
+        prefetch_L2(get_vec(idx2));
+        prefetch_L2(get_vec(idx3));
+        prefetch_L2(get_vec(idx4));
+        prefetch_L2(get_vec(idx5));
+        prefetch_L2(get_vec(idx6));
+        prefetch_L2(get_vec(idx7));
+        
+        const float* v0 = get_vec(idx0);
+        prefetch_L1(v0 + 64);
+        const float* v1 = get_vec(idx1);
+        prefetch_L1(v1 + 64);
+        const float* v2 = get_vec(idx2);
+        prefetch_L1(v2 + 64);
+        const float* v3 = get_vec(idx3);
+        prefetch_L1(v3 + 64);
+        const float* v4 = get_vec(idx4);
+        prefetch_L1(v4 + 64);
+        const float* v5 = get_vec(idx5);
+        prefetch_L1(v5 + 64);
+        const float* v6 = get_vec(idx6);
+        prefetch_L1(v6 + 64);
+        const float* v7 = get_vec(idx7);
+        prefetch_L1(v7 + 64);
+        
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            dis0 = faiss::fvec_inner_product(q, v0, d);
+            dis1 = faiss::fvec_inner_product(q, v1, d);
+            dis2 = faiss::fvec_inner_product(q, v2, d);
+            dis3 = faiss::fvec_inner_product(q, v3, d);
+            dis4 = faiss::fvec_inner_product(q, v4, d);
+            dis5 = faiss::fvec_inner_product(q, v5, d);
+            dis6 = faiss::fvec_inner_product(q, v6, d);
+            dis7 = faiss::fvec_inner_product(q, v7, d);
+        } else {
+            faiss::fvec_L2sqr_batch_8(
+                    q, v0, v1, v2, v3, v4, v5, v6, v7, d,
+                    dis0, dis1, dis2, dis3, dis4, dis5, dis6, dis7);
+        }
+    }
+};
+
+struct IndexMadviseHugepageFlat : faiss::Index {
+    size_t d;
+    size_t chunk_element_size;
+    size_t chunk_byte_size;
+    size_t chunk_shift;
+    size_t chunk_mask;
+    bool thp_enabled;  // Transparent Huge Pages
+    
+    std::vector<float*> chunk_ptrs;
+
+    static constexpr size_t HUGEPAGE_SIZE = 2 * 1024 * 1024;
+
+    // Compute optimal chunk size based on dimension
+    // Goal: Keep chunk working set in L3 cache while being large enough for THP
+    static size_t compute_optimal_chunk_size(size_t dim) {
+        // Target ~1MB working set per chunk for good cache behavior
+        // But ensure at least 512 vectors and at most 4096 vectors per chunk
+        size_t bytes_per_vector = dim * sizeof(float);
+        size_t target_chunk_bytes = 1024 * 1024;  // 1MB
+        size_t chunk_size = target_chunk_bytes / bytes_per_vector;
+        
+        // Round to power of 2 for efficient indexing
+        size_t power = 1;
+        while (power < chunk_size) power <<= 1;
+        chunk_size = power >> 1;  // Round down to avoid exceeding target
+        if (chunk_size < 512) chunk_size = 512;
+        if (chunk_size > 4096) chunk_size = 4096;
+        
+        return chunk_size;
+    }
+
+    explicit IndexMadviseHugepageFlat(faiss::idx_t dim, size_t chunk_size = 0, faiss::MetricType metric = faiss::METRIC_L2)
+            : faiss::Index(dim, metric), d(dim), thp_enabled(true) {
+        // If chunk_size is 0, compute optimal size based on dimension
+        if (chunk_size == 0) {
+            chunk_element_size = compute_optimal_chunk_size(dim);
+        } else {
+            chunk_element_size = chunk_size;
+        }
+        
+        chunk_shift = 0;
+        size_t tmp = chunk_element_size;
+        while (tmp > 1) {
+            tmp >>= 1;
+            chunk_shift++;
+        }
+        chunk_mask = chunk_element_size - 1;
+        chunk_byte_size = chunk_element_size * d * sizeof(float);
+        
+        // Round up to hugepage boundary for optimal THP behavior
+        chunk_byte_size = ((chunk_byte_size + HUGEPAGE_SIZE - 1) / HUGEPAGE_SIZE) * HUGEPAGE_SIZE;
+    }
+    
+    ~IndexMadviseHugepageFlat() override {
+        for (float* ptr : chunk_ptrs) {
+            if (ptr) {
+                munmap(ptr, chunk_byte_size);
+            }
+        }
+    }
+
+    float* allocate_chunk() {
+        // Use regular mmap (no MAP_HUGETLB)
+        int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+        
+        void* ptr = mmap(nullptr, chunk_byte_size, PROT_READ | PROT_WRITE, flags, -1, 0);
+        
+        if (ptr == MAP_FAILED) {
+            throw std::runtime_error("mmap failed");
+        }
+        
+        // Hint the kernel to use transparent hugepages
+        if (thp_enabled) {
+            int ret = madvise(ptr, chunk_byte_size, MADV_HUGEPAGE);
+            if (ret != 0) {
+                // THP hint failed, but allocation succeeded - continue without THP
+                // This is not fatal, just suboptimal
+            }
+        }
+        
+        return static_cast<float*>(ptr);
+    }
+
+    const float* get_vector(faiss::idx_t i) const {
+        return chunk_ptrs[i >> chunk_shift] + (i & chunk_mask) * d;
+    }
+
+    void add(faiss::idx_t n, const float* x) override {
+        for (faiss::idx_t i = 0; i < n; i++) {
+            faiss::idx_t global_idx = ntotal + i;
+            size_t chunk_idx = global_idx >> chunk_shift;
+            size_t internal_idx = global_idx & chunk_mask;
+            
+            if (unlikely(chunk_idx >= chunk_ptrs.size())) {
+                chunk_ptrs.push_back(allocate_chunk());
+            }
+            
+            std::memcpy(
+                chunk_ptrs[chunk_idx] + internal_idx * d,
+                x + i * d,
+                d * sizeof(float));
+        }
+        ntotal += n;
+    }
+
+    void search(
+            faiss::idx_t,
+            const float*,
+            faiss::idx_t,
+            float*,
+            faiss::idx_t*,
+            const faiss::SearchParameters* = nullptr) const override {
+    }
+
+    void reset() override {
+        for (float* ptr : chunk_ptrs) {
+            if (ptr) {
+                munmap(ptr, chunk_byte_size);
+            }
+        }
+        chunk_ptrs.clear();
+        ntotal = 0;
+    }
+
+    faiss::DistanceComputer* get_distance_computer() const override {
+        return new MadviseHugepageFlatDis(*this);
+    }
+};
+
+MadviseHugepageFlatDis::MadviseHugepageFlatDis(const IndexMadviseHugepageFlat& s)
+        : storage(s), d(s.d), metric(s.metric_type), chunk_shift(s.chunk_shift), 
           chunk_mask(s.chunk_mask), chunk_ptrs(s.chunk_ptrs.data()) {}
 
 #endif // __linux__
@@ -1095,13 +1459,14 @@ std::vector<BenchmarkResult> benchmark_faiss_hnsw(
         const float* queries,
         const faiss::idx_t* ground_truth,
         size_t nb, size_t nq, size_t d, size_t k,
-        int M, int efConstruction, const std::vector<int>& efSearchValues) {
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
     std::vector<BenchmarkResult> results;
 
     size_t mem_before = get_memory_usage_kb();
     double t0 = get_time_sec();
     
-    faiss::IndexHNSWFlat index(d, M);
+    faiss::IndexHNSWFlat index(d, M, metric);
     index.hnsw.efConstruction = efConstruction;
     index.add(nb, data);
     
@@ -1140,13 +1505,14 @@ std::vector<BenchmarkResult> benchmark_faiss_cache_aligned(
         const float* queries,
         const faiss::idx_t* ground_truth,
         size_t nb, size_t nq, size_t d, size_t k,
-        int M, int efConstruction, const std::vector<int>& efSearchValues) {
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
     std::vector<BenchmarkResult> results;
 
     size_t mem_before = get_memory_usage_kb();
     double t0 = get_time_sec();
     
-    IndexCacheAlignedFlat* storage = new IndexCacheAlignedFlat(d);
+    IndexCacheAlignedFlat* storage = new IndexCacheAlignedFlat(d, metric);
     faiss::IndexHNSW index(storage, M);
     index.own_fields = true;
     index.hnsw.efConstruction = efConstruction;
@@ -1188,13 +1554,14 @@ std::vector<BenchmarkResult> benchmark_faiss_reorder_strategy(
         const faiss::idx_t* ground_truth,
         size_t nb, size_t nq, size_t d, size_t k,
         int M, int efConstruction, const std::vector<int>& efSearchValues,
-        ReorderStrategy strategy) {
+        ReorderStrategy strategy,
+        faiss::MetricType metric = faiss::METRIC_L2) {
     std::vector<BenchmarkResult> results;
 
     size_t mem_before = get_memory_usage_kb();
     double t0 = get_time_sec();
     
-    faiss::IndexHNSWFlat index(d, M);
+    faiss::IndexHNSWFlat index(d, M, metric);
     index.hnsw.efConstruction = efConstruction;
     index.add(nb, data);
     
@@ -1247,7 +1614,8 @@ std::vector<BenchmarkResult> benchmark_all_reorder_strategies(
         const float* queries,
         const faiss::idx_t* ground_truth,
         size_t nb, size_t nq, size_t d, size_t k,
-        int M, int efConstruction, const std::vector<int>& efSearchValues) {
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
     std::vector<BenchmarkResult> all_results;
     
     std::vector<ReorderStrategy> strategies = {
@@ -1262,7 +1630,7 @@ std::vector<BenchmarkResult> benchmark_all_reorder_strategies(
         std::cout << "  Testing reorder strategy: " << strategy_name(strategy) << std::endl;
         auto results = benchmark_faiss_reorder_strategy(
             data, queries, ground_truth, nb, nq, d, k,
-            M, efConstruction, efSearchValues, strategy);
+            M, efConstruction, efSearchValues, strategy, metric);
         all_results.insert(all_results.end(), results.begin(), results.end());
     }
     
@@ -1274,13 +1642,14 @@ std::vector<BenchmarkResult> benchmark_faiss_chunked(
         const float* queries,
         const faiss::idx_t* ground_truth,
         size_t nb, size_t nq, size_t d, size_t k,
-        int M, int efConstruction, const std::vector<int>& efSearchValues) {
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
     std::vector<BenchmarkResult> results;
 
     size_t mem_before = get_memory_usage_kb();
     double t0 = get_time_sec();
     
-    IndexChunkedFlat* storage = new IndexChunkedFlat(d, 1024);
+    IndexChunkedFlat* storage = new IndexChunkedFlat(d, 1024, metric);
     faiss::IndexHNSW index(storage, M);
     index.own_fields = true;
     index.hnsw.efConstruction = efConstruction;
@@ -1322,13 +1691,14 @@ std::vector<BenchmarkResult> benchmark_faiss_hugepage(
         const float* queries,
         const faiss::idx_t* ground_truth,
         size_t nb, size_t nq, size_t d, size_t k,
-        int M, int efConstruction, const std::vector<int>& efSearchValues) {
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
     std::vector<BenchmarkResult> results;
 
     size_t mem_before = get_memory_usage_kb();
     double t0 = get_time_sec();
     
-    IndexHugepageChunkedFlat* storage = new IndexHugepageChunkedFlat(d, 16384, true);
+    IndexHugepageChunkedFlat* storage = new IndexHugepageChunkedFlat(d, 16384, true, metric);
     faiss::IndexHNSW index(storage, M);
     index.own_fields = true;
     index.hnsw.efConstruction = efConstruction;
@@ -1358,6 +1728,329 @@ std::vector<BenchmarkResult> benchmark_faiss_hugepage(
         result.search_time_sec = t3 - t2;
         result.search_qps = nq / result.search_time_sec;
         result.recall = compute_recall(labels.data(), ground_truth, nq, k);
+        results.push_back(result);
+    }
+
+    return results;
+}
+
+std::vector<BenchmarkResult> benchmark_faiss_rcm_hugepage(
+        const float* data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb, size_t nq, size_t d, size_t k,
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
+    std::vector<BenchmarkResult> results;
+
+    size_t mem_before = get_memory_usage_kb();
+    double t0 = get_time_sec();
+    
+    faiss::IndexHNSWFlat temp_index(d, M, metric);
+    temp_index.hnsw.efConstruction = efConstruction;
+    temp_index.add(nb, data);
+    
+    auto perm = generate_rcm_permutation(temp_index.hnsw);
+    
+    std::vector<float> reordered_data(nb * d);
+    for (size_t i = 0; i < nb; i++) {
+        std::memcpy(reordered_data.data() + i * d, data + perm[i] * d, d * sizeof(float));
+    }
+    
+    IndexHugepageChunkedFlat* storage = new IndexHugepageChunkedFlat(d, 16384, true, metric);
+    faiss::IndexHNSW index(storage, M);
+    index.own_fields = true;
+    index.hnsw.efConstruction = efConstruction;
+    index.add(nb, reordered_data.data());
+    
+    double t1 = get_time_sec();
+    double build_time = t1 - t0;
+    size_t memory_kb = get_memory_usage_kb() - mem_before;
+
+    std::vector<faiss::idx_t> inverse_perm(nb);
+    for (size_t i = 0; i < nb; i++) {
+        inverse_perm[perm[i]] = i;
+    }
+    std::vector<faiss::idx_t> remapped_gt(nq * k);
+    for (size_t i = 0; i < nq * k; i++) {
+        remapped_gt[i] = inverse_perm[ground_truth[i]];
+    }
+
+    std::vector<float> distances(nq * k);
+    std::vector<faiss::idx_t> labels(nq * k);
+
+    for (int efSearch : efSearchValues) {
+        BenchmarkResult result;
+        result.name = "FAISS RCM+Hugepage";
+        result.ef_search = efSearch;
+        result.build_time_sec = build_time;
+        result.memory_kb = memory_kb;
+
+        index.hnsw.efSearch = efSearch;
+        index.search(std::min(nq, (size_t)100), queries, k, distances.data(), labels.data());
+
+        double t2 = get_time_sec();
+        index.search(nq, queries, k, distances.data(), labels.data());
+        double t3 = get_time_sec();
+
+        result.search_time_sec = t3 - t2;
+        result.search_qps = nq / result.search_time_sec;
+        result.recall = compute_recall(labels.data(), remapped_gt.data(), nq, k);
+        results.push_back(result);
+    }
+
+    return results;
+}
+
+std::vector<BenchmarkResult> benchmark_faiss_weighted_hugepage(
+        const float* data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb, size_t nq, size_t d, size_t k,
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
+    std::vector<BenchmarkResult> results;
+
+    size_t mem_before = get_memory_usage_kb();
+    double t0 = get_time_sec();
+    
+    faiss::IndexHNSWFlat temp_index(d, M, metric);
+    temp_index.hnsw.efConstruction = efConstruction;
+    temp_index.add(nb, data);
+    
+    auto perm = generate_weighted_permutation(temp_index.hnsw);
+    
+    std::vector<float> reordered_data(nb * d);
+    for (size_t i = 0; i < nb; i++) {
+        std::memcpy(reordered_data.data() + i * d, data + perm[i] * d, d * sizeof(float));
+    }
+    
+    IndexHugepageChunkedFlat* storage = new IndexHugepageChunkedFlat(d, 16384, true, metric);
+    faiss::IndexHNSW index(storage, M);
+    index.own_fields = true;
+    index.hnsw.efConstruction = efConstruction;
+    index.add(nb, reordered_data.data());
+    
+    double t1 = get_time_sec();
+    double build_time = t1 - t0;
+    size_t memory_kb = get_memory_usage_kb() - mem_before;
+
+    std::vector<faiss::idx_t> inverse_perm(nb);
+    for (size_t i = 0; i < nb; i++) {
+        inverse_perm[perm[i]] = i;
+    }
+    std::vector<faiss::idx_t> remapped_gt(nq * k);
+    for (size_t i = 0; i < nq * k; i++) {
+        remapped_gt[i] = inverse_perm[ground_truth[i]];
+    }
+
+    std::vector<float> distances(nq * k);
+    std::vector<faiss::idx_t> labels(nq * k);
+
+    for (int efSearch : efSearchValues) {
+        BenchmarkResult result;
+        result.name = "FAISS Weighted+Hugepage";
+        result.ef_search = efSearch;
+        result.build_time_sec = build_time;
+        result.memory_kb = memory_kb;
+
+        index.hnsw.efSearch = efSearch;
+        index.search(std::min(nq, (size_t)100), queries, k, distances.data(), labels.data());
+
+        double t2 = get_time_sec();
+        index.search(nq, queries, k, distances.data(), labels.data());
+        double t3 = get_time_sec();
+
+        result.search_time_sec = t3 - t2;
+        result.search_qps = nq / result.search_time_sec;
+        result.recall = compute_recall(labels.data(), remapped_gt.data(), nq, k);
+        results.push_back(result);
+    }
+
+    return results;
+}
+
+std::vector<BenchmarkResult> benchmark_faiss_madvise_thp(
+        const float* data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb, size_t nq, size_t d, size_t k,
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
+    std::vector<BenchmarkResult> results;
+
+    size_t mem_before = get_memory_usage_kb();
+    double t0 = get_time_sec();
+    
+    IndexMadviseHugepageFlat* storage = new IndexMadviseHugepageFlat(d, 0, metric);
+    std::cout << "    (chunk_size=" << storage->chunk_element_size << " vectors)" << std::endl;
+    faiss::IndexHNSW index(storage, M);
+    index.own_fields = true;
+    index.hnsw.efConstruction = efConstruction;
+    index.add(nb, data);
+    
+    double t1 = get_time_sec();
+    double build_time = t1 - t0;
+    size_t memory_kb = get_memory_usage_kb() - mem_before;
+
+    std::vector<float> distances(nq * k);
+    std::vector<faiss::idx_t> labels(nq * k);
+
+    for (int efSearch : efSearchValues) {
+        BenchmarkResult result;
+        result.name = "FAISS THP (madvise)";
+        result.ef_search = efSearch;
+        result.build_time_sec = build_time;
+        result.memory_kb = memory_kb;
+
+        index.hnsw.efSearch = efSearch;
+        index.search(std::min(nq, (size_t)100), queries, k, distances.data(), labels.data());
+
+        double t2 = get_time_sec();
+        index.search(nq, queries, k, distances.data(), labels.data());
+        double t3 = get_time_sec();
+
+        result.search_time_sec = t3 - t2;
+        result.search_qps = nq / result.search_time_sec;
+        result.recall = compute_recall(labels.data(), ground_truth, nq, k);
+        results.push_back(result);
+    }
+
+    return results;
+}
+
+std::vector<BenchmarkResult> benchmark_faiss_rcm_madvise_thp(
+        const float* data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb, size_t nq, size_t d, size_t k,
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
+    std::vector<BenchmarkResult> results;
+
+    size_t mem_before = get_memory_usage_kb();
+    double t0 = get_time_sec();
+    
+    faiss::IndexHNSWFlat temp_index(d, M, metric);
+    temp_index.hnsw.efConstruction = efConstruction;
+    temp_index.add(nb, data);
+    
+    auto perm = generate_rcm_permutation(temp_index.hnsw);
+    
+    std::vector<float> reordered_data(nb * d);
+    for (size_t i = 0; i < nb; i++) {
+        std::memcpy(reordered_data.data() + i * d, data + perm[i] * d, d * sizeof(float));
+    }
+    
+    IndexMadviseHugepageFlat* storage = new IndexMadviseHugepageFlat(d, 0, metric);
+    std::cout << "    (chunk_size=" << storage->chunk_element_size << " vectors)" << std::endl;
+    faiss::IndexHNSW index(storage, M);
+    index.own_fields = true;
+    index.hnsw.efConstruction = efConstruction;
+    index.add(nb, reordered_data.data());
+    
+    double t1 = get_time_sec();
+    double build_time = t1 - t0;
+    size_t memory_kb = get_memory_usage_kb() - mem_before;
+
+    std::vector<faiss::idx_t> inverse_perm(nb);
+    for (size_t i = 0; i < nb; i++) {
+        inverse_perm[perm[i]] = i;
+    }
+    std::vector<faiss::idx_t> remapped_gt(nq * k);
+    for (size_t i = 0; i < nq * k; i++) {
+        remapped_gt[i] = inverse_perm[ground_truth[i]];
+    }
+
+    std::vector<float> distances(nq * k);
+    std::vector<faiss::idx_t> labels(nq * k);
+
+    for (int efSearch : efSearchValues) {
+        BenchmarkResult result;
+        result.name = "FAISS RCM+THP (madvise)";
+        result.ef_search = efSearch;
+        result.build_time_sec = build_time;
+        result.memory_kb = memory_kb;
+
+        index.hnsw.efSearch = efSearch;
+        index.search(std::min(nq, (size_t)100), queries, k, distances.data(), labels.data());
+
+        double t2 = get_time_sec();
+        index.search(nq, queries, k, distances.data(), labels.data());
+        double t3 = get_time_sec();
+
+        result.search_time_sec = t3 - t2;
+        result.search_qps = nq / result.search_time_sec;
+        result.recall = compute_recall(labels.data(), remapped_gt.data(), nq, k);
+        results.push_back(result);
+    }
+
+    return results;
+}
+
+std::vector<BenchmarkResult> benchmark_faiss_weighted_madvise_thp(
+        const float* data,
+        const float* queries,
+        const faiss::idx_t* ground_truth,
+        size_t nb, size_t nq, size_t d, size_t k,
+        int M, int efConstruction, const std::vector<int>& efSearchValues,
+        faiss::MetricType metric = faiss::METRIC_L2) {
+    std::vector<BenchmarkResult> results;
+
+    size_t mem_before = get_memory_usage_kb();
+    double t0 = get_time_sec();
+    
+    faiss::IndexHNSWFlat temp_index(d, M, metric);
+    temp_index.hnsw.efConstruction = efConstruction;
+    temp_index.add(nb, data);
+    
+    auto perm = generate_weighted_permutation(temp_index.hnsw);
+    
+    std::vector<float> reordered_data(nb * d);
+    for (size_t i = 0; i < nb; i++) {
+        std::memcpy(reordered_data.data() + i * d, data + perm[i] * d, d * sizeof(float));
+    }
+    
+    IndexMadviseHugepageFlat* storage = new IndexMadviseHugepageFlat(d, 0, metric);
+    std::cout << "    (chunk_size=" << storage->chunk_element_size << " vectors)" << std::endl;
+    faiss::IndexHNSW index(storage, M);
+    index.own_fields = true;
+    index.hnsw.efConstruction = efConstruction;
+    index.add(nb, reordered_data.data());
+    
+    double t1 = get_time_sec();
+    double build_time = t1 - t0;
+    size_t memory_kb = get_memory_usage_kb() - mem_before;
+
+    std::vector<faiss::idx_t> inverse_perm(nb);
+    for (size_t i = 0; i < nb; i++) {
+        inverse_perm[perm[i]] = i;
+    }
+    std::vector<faiss::idx_t> remapped_gt(nq * k);
+    for (size_t i = 0; i < nq * k; i++) {
+        remapped_gt[i] = inverse_perm[ground_truth[i]];
+    }
+
+    std::vector<float> distances(nq * k);
+    std::vector<faiss::idx_t> labels(nq * k);
+
+    for (int efSearch : efSearchValues) {
+        BenchmarkResult result;
+        result.name = "FAISS Weighted+THP (madvise)";
+        result.ef_search = efSearch;
+        result.build_time_sec = build_time;
+        result.memory_kb = memory_kb;
+
+        index.hnsw.efSearch = efSearch;
+        index.search(std::min(nq, (size_t)100), queries, k, distances.data(), labels.data());
+
+        double t2 = get_time_sec();
+        index.search(nq, queries, k, distances.data(), labels.data());
+        double t3 = get_time_sec();
+
+        result.search_time_sec = t3 - t2;
+        result.search_qps = nq / result.search_time_sec;
+        result.recall = compute_recall(labels.data(), remapped_gt.data(), nq, k);
         results.push_back(result);
     }
 
@@ -1485,6 +2178,28 @@ std::vector<BenchmarkResult> benchmark_vsag_hgraph(
 
 }
 
+//=============================================================================
+// Vector normalization for angular/cosine similarity datasets
+//=============================================================================
+
+void normalize_vectors(float* data, size_t n, size_t d) {
+    #pragma omp parallel for
+    for (size_t i = 0; i < n; i++) {
+        float* vec = data + i * d;
+        float norm = faiss::fvec_norm_L2sqr(vec, d);
+        norm = std::sqrt(norm);
+        if (norm > 0) {
+            for (size_t j = 0; j < d; j++) {
+                vec[j] /= norm;
+            }
+        }
+    }
+}
+
+const char* metric_to_string(faiss::MetricType metric) {
+    return metric == faiss::METRIC_INNER_PRODUCT ? "Inner Product" : "L2 (Euclidean)";
+}
+
 int main(int argc, char* argv[]) {
     size_t nb = 100000;
     size_t d = 128;
@@ -1494,12 +2209,26 @@ int main(int argc, char* argv[]) {
     int efConstruction = 200;
     std::vector<int> efSearchValues = {50, 100, 200, 400};
     std::string hdf5_path;
+    faiss::MetricType metric = faiss::METRIC_L2;  // Default to L2
 
     // Parse arguments
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg.find(".hdf5") != std::string::npos || arg.find(".h5") != std::string::npos) {
             hdf5_path = arg;
+            // Auto-detect metric from filename
+            if (arg.find("angular") != std::string::npos || 
+                arg.find("cosine") != std::string::npos ||
+                arg.find("ip") != std::string::npos) {
+                metric = faiss::METRIC_INNER_PRODUCT;
+            }
+        } else if (arg == "-metric" && i + 1 < argc) {
+            std::string m = argv[++i];
+            if (m == "ip" || m == "IP" || m == "angular" || m == "cosine") {
+                metric = faiss::METRIC_INNER_PRODUCT;
+            } else if (m == "l2" || m == "L2" || m == "euclidean") {
+                metric = faiss::METRIC_L2;
+            }
         } else if (arg == "-nb" && i + 1 < argc) {
             nb = std::atoi(argv[++i]);
         } else if (arg == "-d" && i + 1 < argc) {
@@ -1540,12 +2269,17 @@ int main(int argc, char* argv[]) {
         database = std::move(dataset.train);
         queries = std::move(dataset.test);
         
-        // Convert int32 neighbors to idx_t (HDF5 has gt_k neighbors per query, we need k)
         ground_truth.resize(nq * k);
         for (size_t q = 0; q < nq; q++) {
             for (size_t i = 0; i < k; i++) {
                 ground_truth[q * k + i] = static_cast<faiss::idx_t>(dataset.neighbors[q * dataset.gt_k + i]);
             }
+        }
+        
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            std::cout << "Normalizing vectors for angular/cosine similarity..." << std::endl;
+            normalize_vectors(database.data(), nb, d);
+            normalize_vectors(queries.data(), nq, d);
         }
     } else
 #endif
@@ -1556,8 +2290,13 @@ int main(int argc, char* argv[]) {
         std::cout << "Generating " << nq << " query vectors..." << std::endl;
         queries = generate_random_vectors(nq, d, 123);
         
+        if (metric == faiss::METRIC_INNER_PRODUCT) {
+            normalize_vectors(database.data(), nb, d);
+            normalize_vectors(queries.data(), nq, d);
+        }
+        
         std::cout << "Computing ground truth..." << std::endl;
-        ground_truth = compute_ground_truth(queries.data(), database.data(), nq, nb, d, k);
+        ground_truth = compute_ground_truth(queries.data(), database.data(), nq, nb, d, k, metric);
     }
 
     std::cout << std::endl;
@@ -1589,6 +2328,7 @@ int main(int argc, char* argv[]) {
 #else
     std::cout << "  HDF5: DISABLED (compile with -DENABLE_HDF5)" << std::endl;
 #endif
+    std::cout << "  Metric: " << metric_to_string(metric) << std::endl;
     std::cout << std::endl;
 
     std::cout << "================================================================" << std::endl;
@@ -1603,7 +2343,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Building and benchmarking FAISS IndexHNSWFlat..." << std::endl;
     auto results_faiss = benchmark_faiss_hnsw(
             database.data(), queries.data(), ground_truth.data(),
-            nb, nq, d, k, M, efConstruction, efSearchValues);
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
     for (const auto& r : results_faiss) {
         print_result(r);
         all_results.push_back(r);
@@ -1613,7 +2353,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Building and benchmarking FAISS CacheAligned..." << std::endl;
     auto results_aligned = benchmark_faiss_cache_aligned(
             database.data(), queries.data(), ground_truth.data(),
-            nb, nq, d, k, M, efConstruction, efSearchValues);
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
     for (const auto& r : results_aligned) {
         print_result(r);
         all_results.push_back(r);
@@ -1623,7 +2363,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Building and benchmarking FAISS Reorder Strategies..." << std::endl;
     auto results_reorder = benchmark_all_reorder_strategies(
             database.data(), queries.data(), ground_truth.data(),
-            nb, nq, d, k, M, efConstruction, efSearchValues);
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
     for (const auto& r : results_reorder) {
         print_result(r);
         all_results.push_back(r);
@@ -1633,7 +2373,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Building and benchmarking FAISS Chunked..." << std::endl;
     auto results_chunked = benchmark_faiss_chunked(
             database.data(), queries.data(), ground_truth.data(),
-            nb, nq, d, k, M, efConstruction, efSearchValues);
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
     for (const auto& r : results_chunked) {
         print_result(r);
         all_results.push_back(r);
@@ -1644,8 +2384,58 @@ int main(int argc, char* argv[]) {
     std::cout << "Building and benchmarking FAISS Hugepage..." << std::endl;
     auto results_hugepage = benchmark_faiss_hugepage(
             database.data(), queries.data(), ground_truth.data(),
-            nb, nq, d, k, M, efConstruction, efSearchValues);
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
     for (const auto& r : results_hugepage) {
+        print_result(r);
+        all_results.push_back(r);
+    }
+    std::cout << std::string(105, '-') << std::endl;
+
+    std::cout << "Building and benchmarking FAISS RCM+Hugepage..." << std::endl;
+    auto results_rcm_hp = benchmark_faiss_rcm_hugepage(
+            database.data(), queries.data(), ground_truth.data(),
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
+    for (const auto& r : results_rcm_hp) {
+        print_result(r);
+        all_results.push_back(r);
+    }
+    std::cout << std::string(105, '-') << std::endl;
+
+    std::cout << "Building and benchmarking FAISS Weighted+Hugepage..." << std::endl;
+    auto results_weighted_hp = benchmark_faiss_weighted_hugepage(
+            database.data(), queries.data(), ground_truth.data(),
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
+    for (const auto& r : results_weighted_hp) {
+        print_result(r);
+        all_results.push_back(r);
+    }
+    std::cout << std::string(105, '-') << std::endl;
+
+    std::cout << "Building and benchmarking FAISS THP (madvise)..." << std::endl;
+    auto results_madvise = benchmark_faiss_madvise_thp(
+            database.data(), queries.data(), ground_truth.data(),
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
+    for (const auto& r : results_madvise) {
+        print_result(r);
+        all_results.push_back(r);
+    }
+    std::cout << std::string(105, '-') << std::endl;
+
+    std::cout << "Building and benchmarking FAISS RCM+THP (madvise)..." << std::endl;
+    auto results_rcm_madvise = benchmark_faiss_rcm_madvise_thp(
+            database.data(), queries.data(), ground_truth.data(),
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
+    for (const auto& r : results_rcm_madvise) {
+        print_result(r);
+        all_results.push_back(r);
+    }
+    std::cout << std::string(105, '-') << std::endl;
+
+    std::cout << "Building and benchmarking FAISS Weighted+THP (madvise)..." << std::endl;
+    auto results_weighted_madvise = benchmark_faiss_weighted_madvise_thp(
+            database.data(), queries.data(), ground_truth.data(),
+            nb, nq, d, k, M, efConstruction, efSearchValues, metric);
+    for (const auto& r : results_weighted_madvise) {
         print_result(r);
         all_results.push_back(r);
     }

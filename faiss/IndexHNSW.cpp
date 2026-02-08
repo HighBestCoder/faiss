@@ -23,6 +23,7 @@
 
 #include <faiss/Index2Layer.h>
 #include <faiss/IndexFlat.h>
+#include <faiss/IndexFlatShared.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
@@ -149,6 +150,16 @@ void hnsw_add_vertices(
                 int prev_display =
                         verbose && omp_get_thread_num() == 0 ? 0 : -1;
                 size_t counter = 0;
+                const IndexFlatShared* flat_shared_ptr = nullptr;
+                if (!x) {
+                    flat_shared_ptr = dynamic_cast<
+                            const IndexFlatShared*>(
+                            index_hnsw.storage);
+                    FAISS_THROW_IF_NOT_MSG(
+                            flat_shared_ptr,
+                            "x == nullptr requires storage "
+                            "to be IndexFlatShared");
+                }
 
                 // here we should do schedule(dynamic) but this segfaults for
                 // some versions of LLVM. The performance impact should not be
@@ -156,7 +167,15 @@ void hnsw_add_vertices(
 #pragma omp for schedule(static)
                 for (int i = i0; i < i1; i++) {
                     storage_idx_t pt_id = order[i];
-                    dis->set_query(x + (pt_id - n0) * d);
+                    if (x) {
+                        dis->set_query(x + (pt_id - n0) * d);
+                    } else {
+                        idx_t storage_id =
+                                flat_shared_ptr->storage_id_map[pt_id];
+                        dis->set_query(
+                                flat_shared_ptr->store->get_vector(
+                                        storage_id));
+                    }
 
                     // cannot break
                     if (interrupt) {
@@ -347,7 +366,9 @@ void IndexHNSW::add(idx_t n, const float* x) {
             "Please use IndexHNSWFlat (or variants) instead of IndexHNSW directly");
     FAISS_THROW_IF_NOT(is_trained);
     int n0 = ntotal;
-    storage->add(n, x);
+    if (x) {
+        storage->add(n, x);
+    }
     ntotal = storage->ntotal;
 
     hnsw_add_vertices(*this, n0, n, x, verbose, hnsw.levels.size() == ntotal);
