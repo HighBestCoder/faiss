@@ -1,0 +1,106 @@
+Loaded HDF5 dataset: /src/faiss-dev/dataset/gist-960-euclidean.hdf5
+  Train: 1000000 x 960
+  Test: 1000 x 960
+  Ground truth: 1000 x 100
+
+================================================================
+  FAISS vs VSAG HGraph Comparison Benchmark
+================================================================
+
+Parameters:
+  Database size: 1000000 vectors
+  Dimension: 960
+  Queries: 1000
+  k: 10
+  HNSW M: 16
+  HNSW efConstruction: 100
+  efSearch values: 50, 100
+  Threads: 8
+  VSAG: ENABLED
+  HDF5: ENABLED
+  Metric: L2 (Euclidean)
+
+================================================================
+  Results
+================================================================
+
+Index Type                           efSearch    Build(s)   Search(s)         QPS   Recall@10  Memory(MB)
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS IndexHNSWFlat...
+FAISS IndexHNSWFlat                        50      412.78       0.175      5725.6      0.6759      3999.2
+FAISS IndexHNSWFlat                       100      412.78       0.268      3731.5      0.7833      3999.2
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS CacheAligned...
+FAISS CacheAligned                         50      435.11       0.164      6104.2      0.6751        68.4
+FAISS CacheAligned                        100      435.11       0.275      3631.7      0.7827        68.4
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS Reorder Strategies...
+  Testing reorder strategy: BFS
+  Testing reorder strategy: RCM
+  Testing reorder strategy: DFS
+  Testing reorder strategy: Cluster
+  Testing reorder strategy: Weighted
+FAISS Reorder-BFS                          50      418.98       0.155      6445.5      0.6787      3604.5
+FAISS Reorder-BFS                         100      418.98       0.248      4032.3      0.7839      3604.5
+FAISS Reorder-RCM                          50      428.46       0.153      6531.4      0.6719         7.9
+FAISS Reorder-RCM                         100      428.46       0.233      4299.6      0.7830         7.9
+FAISS Reorder-DFS                          50      428.84       0.239      4190.9      0.6719         0.1
+FAISS Reorder-DFS                         100      428.84       0.331      3017.3      0.7817         0.1
+FAISS Reorder-Cluster                      50      427.35       0.192      5199.4      0.6764         0.0
+FAISS Reorder-Cluster                     100      427.35       0.335      2985.0      0.7848         0.0
+FAISS Reorder-Weighted                     50      419.68       0.146      6839.4      0.6707        13.6
+FAISS Reorder-Weighted                    100      419.68       0.243      4119.9      0.7800        13.6
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS Chunked...
+FAISS Chunked                              50      412.84       0.147      6787.7      0.6767         0.0
+FAISS Chunked                             100      412.84       0.273      3658.7      0.7845         0.0
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS Hugepage...
+FAISS Hugepage                             50      410.96       0.158      6317.1      0.6742         0.0
+FAISS Hugepage                            100      410.96       0.251      3982.0      0.7810         0.0
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS RCM+Hugepage...
+FAISS RCM+Hugepage                         50      831.63       0.150      6686.2      0.6810      3771.4
+FAISS RCM+Hugepage                        100      831.63       0.242      4125.0      0.7860      3771.4
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS Weighted+Hugepage...
+FAISS Weighted+Hugepage                    50      825.21       0.138      7237.3      0.6740         3.6
+FAISS Weighted+Hugepage                   100      825.21       0.228      4383.3      0.7821         3.6
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking VSAG HGraph...
+VSAG HGraph                                50      192.50       0.444      2250.9      0.4654         0.0
+VSAG HGraph                               100      192.50       0.709      1410.9      0.5548         0.0
+---------------------------------------------------------------------------------------------------------
+
+================================================================
+  Summary (Recall-QPS Table)
+================================================================
+
+Index Type                           efSearch   Recall@10         QPS
+---------------------------------------------------------------------
+FAISS IndexHNSWFlat                        50      0.6759      5725.6
+FAISS IndexHNSWFlat                       100      0.7833      3731.5
+FAISS CacheAligned                         50      0.6751      6104.2
+FAISS CacheAligned                        100      0.7827      3631.7
+FAISS Reorder-BFS                          50      0.6787      6445.5
+FAISS Reorder-BFS                         100      0.7839      4032.3
+FAISS Reorder-RCM                          50      0.6719      6531.4
+FAISS Reorder-RCM                         100      0.7830      4299.6
+FAISS Reorder-DFS                          50      0.6719      4190.9
+FAISS Reorder-DFS                         100      0.7817      3017.3
+FAISS Reorder-Cluster                      50      0.6764      5199.4
+FAISS Reorder-Cluster                     100      0.7848      2985.0
+FAISS Reorder-Weighted                     50      0.6707      6839.4
+FAISS Reorder-Weighted                    100      0.7800      4119.9
+FAISS Chunked                              50      0.6767      6787.7
+FAISS Chunked                             100      0.7845      3658.7
+FAISS Hugepage                             50      0.6742      6317.1
+FAISS Hugepage                            100      0.7810      3982.0
+FAISS RCM+Hugepage                         50      0.6810      6686.2
+FAISS RCM+Hugepage                        100      0.7860      4125.0
+FAISS Weighted+Hugepage                    50      0.6740      7237.3
+FAISS Weighted+Hugepage                   100      0.7821      4383.3
+VSAG HGraph                                50      0.4654      2250.9
+VSAG HGraph                               100      0.5548      1410.9
+
+Benchmark complete.

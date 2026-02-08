@@ -1,0 +1,60 @@
+Loaded HDF5 dataset: /src/faiss-dev/dataset/sift-128-euclidean.hdf5
+  Train: 1000000 x 128
+  Test:  10000 x 128
+  GT:    10000 x 100
+
+================================================================
+  SharedVectorStore Rebuild Pipeline Benchmark
+================================================================
+  Dataset:          /src/faiss-dev/dataset/sift-128-euclidean.hdf5
+  Vectors:          1000000 x 128
+  Queries:          10000
+  Metric:           L2
+  M=16  efConstruction=40  efSearch=64
+  Delete:           10%
+  OMP threads:      8
+================================================================
+
+[1/5] Building baseline IndexHNSWFlat...
+  Build: 27.03s
+  QPS: 33580  Recall@10: 0.9176
+
+[2/5] Building fresh IndexHNSW + IndexFlatShared...
+  Build: 25.47s
+  QPS: 31604  Recall@10: 0.9175  (94.1% of baseline)
+
+[3/5] Delete 10% + Rebuild (zero-copy)...
+  Deleted: 100000  Alive: 900000
+  Rebuild: 25.59s
+  Computing brute-force ground truth on alive vectors...
+  Brute-force GT computed for 10000 queries, k=10
+  QPS: 28196  Recall@10: 0.9188  (84.0% of baseline)
+
+[4/5] Compact store...
+  Compact: 0.302s
+  is_identity_map: true
+  Correctness: PASS
+  QPS: 31136  Recall@10: 0.9188  (92.7% of baseline)
+
+[5/5] Reorder strategies...
+  BFS           time:  0.316s  QPS:    33895  (100.9%)  Recall: 0.9187  correct: Y
+  RCM           time:  0.353s  QPS:    29013  (86.4%)  Recall: 0.9188  correct: Y
+  DFS           time:  0.361s  QPS:    30713  (91.5%)  Recall: 0.9188  correct: Y
+  Cluster       time:  0.386s  QPS:    31731  (94.5%)  Recall: 0.9188  correct: Y
+  Weighted      time:  0.402s  QPS:    32066  (95.5%)  Recall: 0.9188  correct: Y
+
+
+Stage                                  Time(s)        QPS  Recall@10  vs Base
+--------------------------------------------------------------------------------
+Baseline (IndexHNSWFlat)                 27.03      33580     0.9176   100.0%
+Fresh (IndexFlatShared)                  25.47      31604     0.9175    94.1%
+Rebuilt (before compact)                 25.59      28196     0.9188    84.0%
+Compact                                   0.30      31136     0.9188    92.7%
+Reorder (BFS)                             0.32      33895     0.9187   100.9%
+Reorder (RCM)                             0.35      29013     0.9188    86.4%
+Reorder (DFS)                             0.36      30713     0.9188    91.5%
+Reorder (Cluster)                         0.39      31731     0.9188    94.5%
+Reorder (Weighted)                        0.40      32066     0.9188    95.5%
+
+Best reorder strategy: BFS (QPS: 33895, 100.9% of baseline)
+RESULT: PASS — within 5% of baseline

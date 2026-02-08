@@ -1,0 +1,158 @@
+Loaded HDF5 dataset: /src/faiss-dev/dataset/glove-100-angular.hdf5
+  Train: 1183514 x 100
+  Test: 10000 x 100
+  Ground truth: 10000 x 100
+Normalizing vectors for angular/cosine similarity...
+
+================================================================
+  FAISS vs VSAG HGraph Comparison Benchmark
+================================================================
+
+Parameters:
+  Database size: 1183514 vectors
+  Dimension: 100
+  Queries: 10000
+  k: 10
+  HNSW M: 16
+  HNSW efConstruction: 100
+  efSearch values: 50, 100, 200
+  Threads: 8
+  VSAG: ENABLED
+  HDF5: ENABLED
+  Metric: Inner Product
+
+================================================================
+  Results
+================================================================
+
+Index Type                           efSearch    Build(s)   Search(s)         QPS   Recall@10  Memory(MB)
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS IndexHNSWFlat...
+FAISS IndexHNSWFlat                        50      160.97       0.402     24894.0      0.7266       848.7
+FAISS IndexHNSWFlat                       100      160.97       0.663     15091.0      0.8025       848.7
+FAISS IndexHNSWFlat                       200      160.97       1.205      8295.5      0.8581       848.7
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS CacheAligned...
+FAISS CacheAligned                         50      257.54       0.988     10121.2      0.7269       214.0
+FAISS CacheAligned                        100      257.54       1.682      5945.9      0.8021       214.0
+FAISS CacheAligned                        200      257.54       2.899      3449.2      0.8591       214.0
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS Reorder Strategies...
+  Testing reorder strategy: BFS
+  Testing reorder strategy: RCM
+  Testing reorder strategy: DFS
+  Testing reorder strategy: Cluster
+  Testing reorder strategy: Weighted
+FAISS Reorder-BFS                          50      155.67       0.383     26123.9      0.7271       362.1
+FAISS Reorder-BFS                         100      155.67       0.625     15991.9      0.8021       362.1
+FAISS Reorder-BFS                         200      155.67       1.112      8993.0      0.8578       362.1
+FAISS Reorder-RCM                          50      185.55       0.382     26193.4      0.7248         0.0
+FAISS Reorder-RCM                         100      185.55       0.656     15252.8      0.8011         0.0
+FAISS Reorder-RCM                         200      185.55       1.167      8570.8      0.8575         0.0
+FAISS Reorder-DFS                          50      161.37       0.390     25654.3      0.7280         0.1
+FAISS Reorder-DFS                         100      161.37       0.621     16102.9      0.8030         0.1
+FAISS Reorder-DFS                         200      161.37       1.122      8912.4      0.8588         0.1
+FAISS Reorder-Cluster                      50      154.02       0.358     27917.2      0.7268         0.1
+FAISS Reorder-Cluster                     100      154.02       0.613     16311.6      0.8030         0.1
+FAISS Reorder-Cluster                     200      154.02       1.123      8901.7      0.8595         0.1
+FAISS Reorder-Weighted                     50      156.24       0.391     25568.2      0.7257         0.0
+FAISS Reorder-Weighted                    100      156.24       0.662     15116.5      0.8019         0.0
+FAISS Reorder-Weighted                    200      156.24       1.175      8510.0      0.8585         0.0
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS Chunked...
+FAISS Chunked                              50      202.06       0.690     14503.2      0.7267         0.0
+FAISS Chunked                             100      202.06       1.141      8762.1      0.8011         0.0
+FAISS Chunked                             200      202.06       2.001      4997.0      0.8583         0.0
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS Hugepage...
+FAISS Hugepage                             50      186.84       0.670     14932.3      0.7269         0.0
+FAISS Hugepage                            100      186.84       1.076      9297.7      0.8022         0.0
+FAISS Hugepage                            200      186.84       1.957      5110.0      0.8570         0.0
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS RCM+Hugepage...
+FAISS RCM+Hugepage                         50      328.51       0.636     15714.8      0.7301       727.3
+FAISS RCM+Hugepage                        100      328.51       1.072      9328.0      0.8041       727.3
+FAISS RCM+Hugepage                        200      328.51       1.884      5308.3      0.8595       727.3
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS Weighted+Hugepage...
+FAISS Weighted+Hugepage                    50      333.31       0.624     16019.8      0.7267         0.1
+FAISS Weighted+Hugepage                   100      333.31       1.075      9301.1      0.8024         0.1
+FAISS Weighted+Hugepage                   200      333.31       1.922      5201.7      0.8589         0.1
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS THP (madvise)...
+    (chunk_size=2048 vectors)
+FAISS THP (madvise)                        50      187.44       0.657     15222.2      0.7263         0.0
+FAISS THP (madvise)                       100      187.44       1.100      9092.8      0.8021         0.0
+FAISS THP (madvise)                       200      187.44       1.953      5120.0      0.8582         0.0
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS RCM+THP (madvise)...
+    (chunk_size=2048 vectors)
+FAISS RCM+THP (madvise)                    50      333.49       0.652     15349.2      0.7261       578.0
+FAISS RCM+THP (madvise)                   100      333.49       1.065      9392.1      0.8012       578.0
+FAISS RCM+THP (madvise)                   200      333.49       1.853      5396.8      0.8577       578.0
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking FAISS Weighted+THP (madvise)...
+    (chunk_size=2048 vectors)
+FAISS Weighted+THP (madvise)               50      335.62       0.617     16200.4      0.7265         0.0
+FAISS Weighted+THP (madvise)              100      335.62       1.073      9321.1      0.8015         0.0
+FAISS Weighted+THP (madvise)              200      335.62       1.857      5385.5      0.8586         0.0
+---------------------------------------------------------------------------------------------------------
+Building and benchmarking VSAG HGraph...
+VSAG HGraph                                50      118.13       1.942      5148.2      0.3789         0.0
+VSAG HGraph                               100      118.13       3.417      2926.7      0.4784         0.0
+VSAG HGraph                               200      118.13       6.123      1633.1      0.5763         0.0
+---------------------------------------------------------------------------------------------------------
+
+================================================================
+  Summary (Recall-QPS Table)
+================================================================
+
+Index Type                           efSearch   Recall@10         QPS
+---------------------------------------------------------------------
+FAISS IndexHNSWFlat                        50      0.7266     24894.0
+FAISS IndexHNSWFlat                       100      0.8025     15091.0
+FAISS IndexHNSWFlat                       200      0.8581      8295.5
+FAISS CacheAligned                         50      0.7269     10121.2
+FAISS CacheAligned                        100      0.8021      5945.9
+FAISS CacheAligned                        200      0.8591      3449.2
+FAISS Reorder-BFS                          50      0.7271     26123.9
+FAISS Reorder-BFS                         100      0.8021     15991.9
+FAISS Reorder-BFS                         200      0.8578      8993.0
+FAISS Reorder-RCM                          50      0.7248     26193.4
+FAISS Reorder-RCM                         100      0.8011     15252.8
+FAISS Reorder-RCM                         200      0.8575      8570.8
+FAISS Reorder-DFS                          50      0.7280     25654.3
+FAISS Reorder-DFS                         100      0.8030     16102.9
+FAISS Reorder-DFS                         200      0.8588      8912.4
+FAISS Reorder-Cluster                      50      0.7268     27917.2
+FAISS Reorder-Cluster                     100      0.8030     16311.6
+FAISS Reorder-Cluster                     200      0.8595      8901.7
+FAISS Reorder-Weighted                     50      0.7257     25568.2
+FAISS Reorder-Weighted                    100      0.8019     15116.5
+FAISS Reorder-Weighted                    200      0.8585      8510.0
+FAISS Chunked                              50      0.7267     14503.2
+FAISS Chunked                             100      0.8011      8762.1
+FAISS Chunked                             200      0.8583      4997.0
+FAISS Hugepage                             50      0.7269     14932.3
+FAISS Hugepage                            100      0.8022      9297.7
+FAISS Hugepage                            200      0.8570      5110.0
+FAISS RCM+Hugepage                         50      0.7301     15714.8
+FAISS RCM+Hugepage                        100      0.8041      9328.0
+FAISS RCM+Hugepage                        200      0.8595      5308.3
+FAISS Weighted+Hugepage                    50      0.7267     16019.8
+FAISS Weighted+Hugepage                   100      0.8024      9301.1
+FAISS Weighted+Hugepage                   200      0.8589      5201.7
+FAISS THP (madvise)                        50      0.7263     15222.2
+FAISS THP (madvise)                       100      0.8021      9092.8
+FAISS THP (madvise)                       200      0.8582      5120.0
+FAISS RCM+THP (madvise)                    50      0.7261     15349.2
+FAISS RCM+THP (madvise)                   100      0.8012      9392.1
+FAISS RCM+THP (madvise)                   200      0.8577      5396.8
+FAISS Weighted+THP (madvise)               50      0.7265     16200.4
+FAISS Weighted+THP (madvise)              100      0.8015      9321.1
+FAISS Weighted+THP (madvise)              200      0.8586      5385.5
+VSAG HGraph                                50      0.3789      5148.2
+VSAG HGraph                               100      0.4784      2926.7
+VSAG HGraph                               200      0.5763      1633.1
+
+Benchmark complete.
