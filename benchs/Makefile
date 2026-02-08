@@ -14,8 +14,7 @@ REBUILD_BIN = ../build/benchs/bench_rebuild_perf
 REBUILD_M ?= 16
 REBUILD_EFC ?= 40
 REBUILD_EFS ?= 64
-REBUILD_DEL ?= 10
-REBUILD_ARGS = -M $(REBUILD_M) -efConstruction $(REBUILD_EFC) -efSearch $(REBUILD_EFS) -delete_pct $(REBUILD_DEL)
+REBUILD_ARGS = -M $(REBUILD_M) -efConstruction $(REBUILD_EFC) -efSearch $(REBUILD_EFS)
 
 .PHONY: all test test-l2 test-angular test-sift test-gist test-glove test-nytimes test-deep clean help
 .PHONY: share-test rebuild-perf rebuild-perf-sift rebuild-perf-gist rebuild-perf-glove rebuild-perf-nytimes
@@ -52,7 +51,6 @@ help:
 	@echo "  REBUILD_M=$(REBUILD_M)"
 	@echo "  REBUILD_EFC=$(REBUILD_EFC)"
 	@echo "  REBUILD_EFS=$(REBUILD_EFS)"
-	@echo "  REBUILD_DEL=$(REBUILD_DEL)"
 
 test: test-l2 test-angular
 

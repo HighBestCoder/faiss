@@ -1,0 +1,142 @@
+Loaded HDF5 dataset: /src/faiss-dev/dataset/glove-100-angular.hdf5
+  Train: 1183514 x 100
+  Test:  10000 x 100
+  GT:    10000 x 100
+Normalizing vectors for angular/cosine similarity...
+
+================================================================
+  SharedVectorStore Rebuild Pipeline Benchmark
+================================================================
+  Dataset:          /src/faiss-dev/dataset/glove-100-angular.hdf5
+  Vectors:          1183514 x 100
+  Queries:          10000
+  Metric:           Inner Product
+  M=16  efConstruction=40  efSearch=64
+  OMP threads:      8
+  Vector data:      0.44 GB
+================================================================
+
+[Phase 1] Baseline-A + all Baseline-B measurements
+  Building IndexHNSWFlat (all 1183514 vectors)...
+  Build: 51.42s
+  Baseline-A: QPS: 20303  Recall@10: 0.6667
+
+  --- delete_pct = 10% (deleted: 118351, alive: 1065163) ---
+    Computing brute-force GT on 1065163 alive vectors...
+  Overfetch: top_k=10, delete_ratio=0.100, search_k=12
+    Baseline-B: QPS: 20978  Recall: 0.6592
+
+  --- delete_pct = 20% (deleted: 236702, alive: 946812) ---
+    Computing brute-force GT on 946812 alive vectors...
+  Overfetch: top_k=10, delete_ratio=0.200, search_k=15
+    Baseline-B: QPS: 19636  Recall: 0.6566
+
+  --- delete_pct = 30% (deleted: 355054, alive: 828460) ---
+    Computing brute-force GT on 828460 alive vectors...
+  Overfetch: top_k=10, delete_ratio=0.300, search_k=18
+    Baseline-B: QPS: 20357  Recall: 0.6514
+
+  --- delete_pct = 40% (deleted: 473405, alive: 710109) ---
+    Computing brute-force GT on 710109 alive vectors...
+  Overfetch: top_k=10, delete_ratio=0.400, search_k=21
+    Baseline-B: QPS: 20496  Recall: 0.6427
+
+  --- delete_pct = 50% (deleted: 591757, alive: 591757) ---
+    Computing brute-force GT on 591757 alive vectors...
+  Overfetch: top_k=10, delete_ratio=0.500, search_k=25
+    Baseline-B: QPS: 19713  Recall: 0.6352
+
+  --- delete_pct = 60% (deleted: 710108, alive: 473406) ---
+    Computing brute-force GT on 473406 alive vectors...
+  Overfetch: top_k=10, delete_ratio=0.600, search_k=27
+    Baseline-B: QPS: 20037  Recall: 0.6140
+
+  --- delete_pct = 70% (deleted: 828459, alive: 355055) ---
+    Computing brute-force GT on 355055 alive vectors...
+  Overfetch: top_k=10, delete_ratio=0.700, search_k=30
+    Baseline-B: QPS: 19758  Recall: 0.5708
+
+  --- delete_pct = 80% (deleted: 946811, alive: 236703) ---
+    Computing brute-force GT on 236703 alive vectors...
+  Overfetch: top_k=10, delete_ratio=0.800, search_k=33
+    Baseline-B: QPS: 19330  Recall: 0.4757
+
+  [Phase 1 done] baseline_a destroyed, memory freed.
+
+[Phase 2] Building SharedVectorStore index...
+  Build: 49.87s
+  Fresh: QPS: 19718  Recall@10: 0.6643  (97.1% of A)
+  dataset.train freed (0.44 GB). Using store->codes as vector source.
+  Store backup saved (0.44 GB).
+
+[Phase 3] Baseline-C + SharedStore per delete_pct
+
+--- delete_pct = 10% (deleted: 118351, alive: 1065163) ---
+  Baseline-C: QPS: 21107  Recall: 0.6774  Build: 44.50s
+  SharedStore pipeline:
+    Rebuilt:       QPS: 16416  Recall: 0.6786  Build: 51.04s
+    Compact:       QPS: 21348  Recall: 0.6786
+    Best reorder:  QPS: 23349  Recall: 0.6786  [Weighted]  (110.6% of C)
+
+--- delete_pct = 20% (deleted: 236702, alive: 946812) ---
+  Baseline-C: QPS: 21342  Recall: 0.6785  Build: 38.97s
+  SharedStore pipeline:
+    Rebuilt:       QPS: 16930  Recall: 0.6750  Build: 43.94s
+    Compact:       QPS: 21566  Recall: 0.6750
+    Best reorder:  QPS: 24497  Recall: 0.6750  [Weighted]  (114.8% of C)
+
+--- delete_pct = 30% (deleted: 355054, alive: 828460) ---
+  Baseline-C: QPS: 21698  Recall: 0.6869  Build: 33.10s
+  SharedStore pipeline:
+    Rebuilt:       QPS: 16918  Recall: 0.6876  Build: 37.80s
+    Compact:       QPS: 22585  Recall: 0.6876
+    Best reorder:  QPS: 24759  Recall: 0.6876  [Weighted]  (114.1% of C)
+
+--- delete_pct = 40% (deleted: 473405, alive: 710109) ---
+  Baseline-C: QPS: 20521  Recall: 0.6908  Build: 27.98s
+  SharedStore pipeline:
+    Rebuilt:       QPS: 17581  Recall: 0.6899  Build: 31.39s
+    Compact:       QPS: 22740  Recall: 0.6899
+    Best reorder:  QPS: 24647  Recall: 0.6899  [Weighted]  (120.1% of C)
+
+--- delete_pct = 50% (deleted: 591757, alive: 591757) ---
+  Baseline-C: QPS: 22973  Recall: 0.7019  Build: 22.90s
+  SharedStore pipeline:
+    Rebuilt:       QPS: 17442  Recall: 0.7022  Build: 25.78s
+    Compact:       QPS: 23438  Recall: 0.7022
+    Best reorder:  QPS: 25366  Recall: 0.7022  [BFS]  (110.4% of C)
+
+--- delete_pct = 60% (deleted: 710108, alive: 473406) ---
+  Baseline-C: QPS: 23565  Recall: 0.7110  Build: 17.31s
+  SharedStore pipeline:
+    Rebuilt:       QPS: 18162  Recall: 0.7113  Build: 20.01s
+    Compact:       QPS: 24180  Recall: 0.7113
+    Best reorder:  QPS: 27080  Recall: 0.7113  [Weighted]  (114.9% of C)
+
+--- delete_pct = 70% (deleted: 828459, alive: 355055) ---
+  Baseline-C: QPS: 24455  Recall: 0.7238  Build: 12.25s
+  SharedStore pipeline:
+    Rebuilt:       QPS: 19308  Recall: 0.7260  Build: 14.02s
+    Compact:       QPS: 25096  Recall: 0.7260
+    Best reorder:  QPS: 26702  Recall: 0.7260  [BFS]  (109.2% of C)
+
+--- delete_pct = 80% (deleted: 946811, alive: 236703) ---
+  Baseline-C: QPS: 24710  Recall: 0.7430  Build: 8.18s
+  SharedStore pipeline:
+    Rebuilt:       QPS: 20423  Recall: 0.7429  Build: 9.17s
+    Compact:       QPS: 27267  Recall: 0.7429
+    Best reorder:  QPS: 30142  Recall: 0.7429  [Weighted]  (122.0% of C)
+
+=== Cross Delete-Pct Summary ===
+Del%  | Baseline-B QPS (Recall)  | Baseline-C QPS (Recall)  | SharedStore QPS (Recall) [Strategy]  | vs C%
+------|--------------------------|--------------------------|--------------------------------------|------
+Ref   | Baseline-A (Full):       QPS: 20303  Recall: 0.6667
+Ref   | Fresh (Shared Full):     QPS: 19718  Recall: 0.6643
+ 10%  |    20978 (0.6592)        |    21107 (0.6774)        |    23349 (0.6786) [Weighted ]        | 110.6%
+ 20%  |    19636 (0.6566)        |    21342 (0.6785)        |    24497 (0.6750) [Weighted ]        | 114.8%
+ 30%  |    20357 (0.6514)        |    21698 (0.6869)        |    24759 (0.6876) [Weighted ]        | 114.1%
+ 40%  |    20496 (0.6427)        |    20521 (0.6908)        |    24647 (0.6899) [Weighted ]        | 120.1%
+ 50%  |    19713 (0.6352)        |    22973 (0.7019)        |    25366 (0.7022) [BFS      ]        | 110.4%
+ 60%  |    20037 (0.6140)        |    23565 (0.7110)        |    27080 (0.7113) [Weighted ]        | 114.9%
+ 70%  |    19758 (0.5708)        |    24455 (0.7238)        |    26702 (0.7260) [BFS      ]        | 109.2%
+ 80%  |    19330 (0.4757)        |    24710 (0.7430)        |    30142 (0.7429) [Weighted ]        | 122.0%
