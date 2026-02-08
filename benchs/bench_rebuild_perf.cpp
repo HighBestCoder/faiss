@@ -680,10 +680,9 @@ int main(int argc, char* argv[]) {
                                 overfetch.qps,
                                 overfetch.recall,
                                 true});
-            printf("  Baseline-B: QPS: %.0f  Recall: %.4f  (%.1f%% of A)\n",
+            printf("  Baseline-B: QPS: %.0f  Recall: %.4f\n",
                    overfetch.qps,
-                   overfetch.recall,
-                   overfetch.qps / sr_baseline_a.qps * 100);
+                   overfetch.recall);
         }
 
         // ============================================================
@@ -820,9 +819,9 @@ int main(int argc, char* argv[]) {
             }
         }
         
-        printf("    Best reorder:  QPS: %.0f  Recall: %.4f  [%s]  (%.1f%% of A)\n",
+        printf("    Best reorder:  QPS: %.0f  Recall: %.4f  [%s]  (%.1f%% of C)\n",
                best_qps, best_recall, best_strat.c_str(), 
-               best_qps / sr_baseline_a.qps * 100);
+               best_qps / sum_row.baseline_c_qps * 100);
 
         sum_row.shared_best_qps = best_qps;
         sum_row.shared_best_recall = best_recall;
@@ -841,7 +840,7 @@ int main(int argc, char* argv[]) {
 
     // --- Final Summary Table ---
     printf("\n=== Cross Delete-Pct Summary ===\n");
-    printf("Del%%  | Baseline-B QPS (Recall)  | Baseline-C QPS (Recall)  | SharedStore QPS (Recall) [Strategy]  | vs A%%\n");
+    printf("Del%%  | Baseline-B QPS (Recall)  | Baseline-C QPS (Recall)  | SharedStore QPS (Recall) [Strategy]  | vs C%%\n");
     printf("------|--------------------------|--------------------------|--------------------------------------|------\n");
 
     printf("Ref   | Baseline-A (Full):       QPS: %.0f  Recall: %.4f\n", sr_baseline_a.qps, sr_baseline_a.recall);
@@ -853,7 +852,7 @@ int main(int argc, char* argv[]) {
                row.baseline_b_qps, row.baseline_b_recall,
                row.baseline_c_qps, row.baseline_c_recall,
                row.shared_best_qps, row.shared_best_recall, row.best_strategy.c_str(),
-               row.shared_best_qps / sr_baseline_a.qps * 100.0);
+               row.shared_best_qps / row.baseline_c_qps * 100.0);
     }
 
     delete baseline_a;
