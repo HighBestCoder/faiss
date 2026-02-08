@@ -8,18 +8,19 @@
 /*
  * Benchmark: SharedVectorStore Rebuild Pipeline on Real Datasets
  *
- * Pipeline stages measured:
- *   1. Baseline   — IndexHNSWFlat (standard FAISS)
- *   2. Fresh      — IndexHNSW + IndexFlatShared (identity map)
- *   3. Rebuilt    — After 10% deletion + zero-copy rebuild
- *   4. Compacted  — After compact_store()
- *   5. Reordered  — After each of 5 reorder strategies
+ * For each delete_pct in {10,20,30,40,50,60,70,80}:
+ *   Baseline-B  — overfetch search + post-filter deleted IDs
+ *   Baseline-C  — new IndexHNSWFlat with only alive vectors
+ *   SharedStore — zero-copy rebuild → compact → best reorder
  *
- * For each stage we report: QPS, Recall@10, vs-baseline ratio.
+ * Baseline-A (full, no delete) and Fresh (SharedStore, no delete)
+ * are measured once as reference.
  *
  * Usage:
  *   bench_rebuild_perf <dataset.hdf5> [-M 16] [-efConstruction 40]
  *                      [-efSearch 64] [-delete_pct 10]
+ *   If -delete_pct is given, only that single percentage is tested.
+ *   Otherwise all of {10,20,30,40,50,60,70,80} are tested.
  */
 
 #include <algorithm>
@@ -142,7 +143,7 @@ void normalize_vectors(float* data, size_t n, size_t d) {
 }
 
 // ============================================================
-// Recall computation using ground-truth from HDF5
+// Recall computation using ground-truth
 // ============================================================
 
 double compute_recall(
@@ -241,6 +242,101 @@ SearchResult measure_search(
 }
 
 // ============================================================
+// Overfetch search with post-filter (Baseline-B)
+//
+// Simulates production deletion handling:
+//   search_k = top_k * (1 + delete_ratio * overfetch_factor)
+//   then filter out deleted IDs from results.
+// ============================================================
+
+struct OverfetchResult {
+    double qps;
+    double recall;
+};
+
+OverfetchResult measure_overfetch_search(
+        faiss::IndexHNSW& index,
+        const float* queries,
+        size_t nq,
+        size_t k,
+        const std::vector<bool>& deleted_set,
+        const faiss::idx_t* ground_truth_orig_ids,
+        size_t nb,
+        int n_warmup = 1,
+        int n_rounds = 3) {
+    const double overfetch_factor = 3.0;
+    double delete_ratio =
+            (double)std::count(deleted_set.begin(), deleted_set.end(), true) /
+            (double)deleted_set.size();
+    uint32_t search_k = static_cast<uint32_t>(
+            k * (1.0 + delete_ratio * overfetch_factor));
+    search_k = std::max(search_k, static_cast<uint32_t>(k));
+    search_k = std::min(search_k, static_cast<uint32_t>(index.ntotal));
+
+    printf("  Overfetch: top_k=%zu, delete_ratio=%.3f, search_k=%u\n",
+           k,
+           delete_ratio,
+           search_k);
+
+    std::vector<float> dists_overfetch(nq * search_k);
+    std::vector<faiss::idx_t> labels_overfetch(nq * search_k);
+    std::vector<faiss::idx_t> filtered_labels(nq * k, -1);
+
+    // warm-up
+    for (int i = 0; i < n_warmup; i++) {
+        size_t nq_warmup = std::min(nq, (size_t)100);
+        std::vector<float> wu_dists(nq_warmup * search_k);
+        std::vector<faiss::idx_t> wu_labels(nq_warmup * search_k);
+        index.search(
+                nq_warmup,
+                queries,
+                search_k,
+                wu_dists.data(),
+                wu_labels.data());
+    }
+
+    // timed runs: measure search + filter together
+    double best_time = 1e30;
+    for (int r = 0; r < n_rounds; r++) {
+        std::fill(filtered_labels.begin(), filtered_labels.end(), -1);
+
+        double t0 = get_time_sec();
+
+        // search with overfetch
+        index.search(
+                nq,
+                queries,
+                search_k,
+                dists_overfetch.data(),
+                labels_overfetch.data());
+
+        // post-filter: remove deleted IDs, keep top-k alive
+        for (size_t q = 0; q < nq; q++) {
+            size_t out_idx = 0;
+            for (uint32_t i = 0; i < search_k && out_idx < k; i++) {
+                faiss::idx_t label =
+                        labels_overfetch[q * search_k + i];
+                if (label >= 0 &&
+                    label < static_cast<faiss::idx_t>(nb) &&
+                    !deleted_set[label]) {
+                    filtered_labels[q * k + out_idx] = label;
+                    out_idx++;
+                }
+            }
+        }
+
+        double t1 = get_time_sec();
+        best_time = std::min(best_time, t1 - t0);
+    }
+
+    OverfetchResult result;
+    result.qps = nq / best_time;
+    result.recall = compute_recall(
+            filtered_labels.data(), ground_truth_orig_ids, nq, k);
+    return result;
+}
+
+// ============================================================
 // HNSWSnapshot — save/restore for non-destructive reorder test
 // ============================================================
 
@@ -297,18 +393,26 @@ struct StageResult {
     bool correct;
 };
 
+struct SummaryRow {
+    int delete_pct;
+    double baseline_b_qps, baseline_b_recall;
+    double baseline_c_qps, baseline_c_recall;
+    double shared_best_qps, shared_best_recall;
+    std::string best_strategy;
+};
+
 void print_table_header() {
-    printf("\n%-35s %10s %10s %10s %8s\n",
+    printf("\n%-40s %10s %10s %10s %8s\n",
            "Stage",
            "Time(s)",
            "QPS",
            "Recall@10",
-           "vs Base");
-    printf("%s\n", std::string(80, '-').c_str());
+           "vs A");
+    printf("%s\n", std::string(85, '-').c_str());
 }
 
 void print_table_row(const StageResult& r, double baseline_qps) {
-    printf("%-35s %10.2f %10.0f %10.4f %7.1f%%",
+    printf("%-40s %10.2f %10.0f %10.4f %7.1f%%",
            r.name.c_str(),
            r.build_time_sec,
            r.qps,
@@ -354,7 +458,7 @@ int main(int argc, char* argv[]) {
     int M = 16;
     int efConstruction = 40;
     int efSearch = 64;
-    int delete_pct = 10;
+    int single_delete_pct = -1;
     size_t k = 10;
     std::string hdf5_path;
     faiss::MetricType metric = faiss::METRIC_L2;
@@ -377,7 +481,7 @@ int main(int argc, char* argv[]) {
         } else if (arg == "-efSearch" && i + 1 < argc) {
             efSearch = std::atoi(argv[++i]);
         } else if (arg == "-delete_pct" && i + 1 < argc) {
-            delete_pct = std::atoi(argv[++i]);
+            single_delete_pct = std::atoi(argv[++i]);
         }
     }
 
@@ -399,11 +503,11 @@ int main(int argc, char* argv[]) {
     size_t nq = dataset.nq;
     size_t d = dataset.dim;
 
-    // build ground truth as idx_t (top-k only)
-    std::vector<faiss::idx_t> ground_truth(nq * k);
+    // HDF5 ground truth (all N vectors, for Baseline-A)
+    std::vector<faiss::idx_t> ground_truth_all(nq * k);
     for (size_t q = 0; q < nq; q++) {
         for (size_t i = 0; i < k; i++) {
-            ground_truth[q * k + i] =
+            ground_truth_all[q * k + i] =
                     static_cast<faiss::idx_t>(dataset.neighbors[q * dataset.gt_k + i]);
         }
     }
@@ -428,44 +532,38 @@ int main(int argc, char* argv[]) {
     printf("  Metric:           %s\n",
            metric == faiss::METRIC_INNER_PRODUCT ? "Inner Product" : "L2");
     printf("  M=%d  efConstruction=%d  efSearch=%d\n", M, efConstruction, efSearch);
-    printf("  Delete:           %d%%\n", delete_pct);
     printf("  OMP threads:      %d\n", omp_get_max_threads());
     printf("================================================================\n");
 
-    std::vector<StageResult> results;
-
     // ============================================================
-    // Stage 1: Baseline — IndexHNSWFlat
+    // Baseline-A: IndexHNSWFlat, all N vectors, no deletion
+    // Kept alive for Baseline-B
     // ============================================================
-    printf("\n[1/5] Building baseline IndexHNSWFlat...\n");
-    SearchResult sr_baseline;
-    double baseline_build;
+    printf("\n[Reference] Baseline-A: IndexHNSWFlat (all %zu vectors, no deletion)...\n", nb);
+    double baseline_a_build;
+    SearchResult sr_baseline_a;
+    auto* baseline_a = new faiss::IndexHNSWFlat(d, M, metric);
     {
         double t0_bl = get_time_sec();
-        faiss::IndexHNSWFlat baseline(d, M, metric);
-        baseline.hnsw.efConstruction = efConstruction;
-        baseline.add(nb, xb);
-        baseline_build = get_time_sec() - t0_bl;
-        printf("  Build: %.2fs\n", baseline_build);
+        baseline_a->hnsw.efConstruction = efConstruction;
+        baseline_a->add(nb, xb);
+        baseline_a_build = get_time_sec() - t0_bl;
+        printf("  Build: %.2fs\n", baseline_a_build);
 
-        baseline.hnsw.efSearch = efSearch;
-        sr_baseline = measure_search(
-                baseline, xq, nq, k, ground_truth.data());
+        baseline_a->hnsw.efSearch = efSearch;
+        sr_baseline_a = measure_search(
+                *baseline_a, xq, nq, k, ground_truth_all.data());
 
-        results.push_back({"Baseline (IndexHNSWFlat)",
-                            baseline_build,
-                            sr_baseline.qps,
-                            sr_baseline.recall,
-                            true});
         printf("  QPS: %.0f  Recall@10: %.4f\n",
-               sr_baseline.qps,
-               sr_baseline.recall);
-    } // baseline destroyed, memory freed
+               sr_baseline_a.qps,
+               sr_baseline_a.recall);
+    }
 
     // ============================================================
-    // Stage 2: Fresh — IndexHNSW + IndexFlatShared
+    // Fresh: IndexHNSW + IndexFlatShared (all N vectors)
+    // Kept alive as the "old index" for the rebuild loop
     // ============================================================
-    printf("\n[2/5] Building fresh IndexHNSW + IndexFlatShared...\n");
+    printf("\n[Reference] Fresh: IndexHNSW + IndexFlatShared (all %zu vectors)...\n", nb);
     auto store = std::make_shared<faiss::SharedVectorStore>(d, d * sizeof(float));
     store->reserve(nb);
 
@@ -475,232 +573,290 @@ int main(int argc, char* argv[]) {
     shared_index->hnsw.efConstruction = efConstruction;
     shared_index->is_trained = true;
 
-    double t0 = get_time_sec();
-    shared_index->add(nb, xb);
-    double fresh_build = get_time_sec() - t0;
-    printf("  Build: %.2fs\n", fresh_build);
-
-    shared_index->hnsw.efSearch = efSearch;
-    auto sr_fresh = measure_search(
-            *shared_index, xq, nq, k, ground_truth.data());
-
-    results.push_back({"Fresh (IndexFlatShared)",
-                        fresh_build,
-                        sr_fresh.qps,
-                        sr_fresh.recall,
-                        true});
-    printf("  QPS: %.0f  Recall@10: %.4f  (%.1f%% of baseline)\n",
-           sr_fresh.qps,
-           sr_fresh.recall,
-           sr_fresh.qps / sr_baseline.qps * 100);
-
-    // Free raw training data — already copied into store->codes
-    { std::vector<float>().swap(dataset.train); }
-
-    // ============================================================
-    // Stage 3: Delete + Rebuild (zero-copy)
-    // ============================================================
-    printf("\n[3/5] Delete %d%% + Rebuild (zero-copy)...\n", delete_pct);
-    size_t n_delete = nb * delete_pct / 100;
-    auto* old_shared =
-            dynamic_cast<faiss::IndexFlatShared*>(shared_index->storage);
-
-    std::mt19937 del_rng(999);
-    std::vector<bool> deleted_set(nb, false);
-    size_t deleted_count = 0;
-    while (deleted_count < n_delete) {
-        size_t idx = del_rng() % nb;
-        if (!deleted_set[idx]) {
-            deleted_set[idx] = true;
-            old_shared->mark_deleted(idx);
-            deleted_count++;
-        }
-    }
-    size_t alive = old_shared->count_alive();
-    printf("  Deleted: %zu  Alive: %zu\n", deleted_count, alive);
-
-    t0 = get_time_sec();
-    faiss::IndexHNSW* rebuilt = faiss::build_new_index(
-            store, *shared_index, M, efConstruction, metric);
-    double rebuild_time = get_time_sec() - t0;
-    printf("  Rebuild: %.2fs\n", rebuild_time);
-
-    rebuilt->hnsw.efSearch = efSearch;
-
-    // The rebuilt index has new local IDs [0, alive).
-    // Compute brute-force ground truth on the alive vectors for accurate recall.
-    auto* rebuilt_shared =
-            dynamic_cast<faiss::IndexFlatShared*>(rebuilt->storage);
-
-    printf("  Computing brute-force ground truth on alive vectors...\n");
-    std::vector<faiss::idx_t> rebuilt_gt(nq * k);
+    SearchResult sr_fresh;
     {
-        std::vector<float> alive_vectors(alive * d);
-        for (size_t i = 0; i < alive; i++) {
-            rebuilt->reconstruct(i, alive_vectors.data() + i * d);
-        }
+        double t0 = get_time_sec();
+        shared_index->add(nb, xb);
+        double fresh_build = get_time_sec() - t0;
+        printf("  Build: %.2fs\n", fresh_build);
 
-        faiss::IndexFlat brute_force(d, metric);
-        brute_force.add(alive, alive_vectors.data());
+        shared_index->hnsw.efSearch = efSearch;
+        sr_fresh = measure_search(
+                *shared_index, xq, nq, k, ground_truth_all.data());
 
-        std::vector<float> rebuilt_gt_dists(nq * k);
-        brute_force.search(
-                nq, xq, k, rebuilt_gt_dists.data(), rebuilt_gt.data());
+        printf("  QPS: %.0f  Recall@10: %.4f  (%.1f%% of A)\n",
+               sr_fresh.qps,
+               sr_fresh.recall,
+               sr_fresh.qps / sr_baseline_a.qps * 100);
     }
-    printf("  Brute-force GT computed for %zu queries, k=%zu\n", nq, k);
 
-    auto sr_rebuilt = measure_search(
-            *rebuilt, xq, nq, k, rebuilt_gt.data());
+    // Save original store state — compact+reorder modify store->codes in
+    // place, so we must restore before the next iteration's build_new_index
+    // which reads old_shared->storage_id_map into the original layout.
+    std::vector<uint8_t> original_store_codes = store->codes;
+    size_t original_ntotal_store = store->ntotal_store;
+    std::vector<faiss::idx_t> original_free_list = store->free_list;
 
-    results.push_back({"Rebuilt (before compact)",
-                        rebuild_time,
-                        sr_rebuilt.qps,
-                        sr_rebuilt.recall,
-                        true});
-    printf("  QPS: %.0f  Recall@10: %.4f  (%.1f%% of baseline)\n",
-           sr_rebuilt.qps,
-           sr_rebuilt.recall,
-           sr_rebuilt.qps / sr_baseline.qps * 100);
+    // Loop over delete percentages
+    std::vector<int> delete_pcts = {10, 20, 30, 40, 50, 60, 70, 80};
+    if (single_delete_pct != -1) {
+        delete_pcts = {single_delete_pct};
+    }
 
-    // ============================================================
-    // Stage 4: Compact store
-    // ============================================================
-    printf("\n[4/5] Compact store...\n");
-    t0 = get_time_sec();
-    faiss::compact_store(*rebuilt_shared);
-    double compact_time = get_time_sec() - t0;
-    printf("  Compact: %.3fs\n", compact_time);
-    printf("  is_identity_map: %s\n",
-           rebuilt_shared->is_identity_map ? "true" : "false");
+    std::vector<SummaryRow> summary_rows;
 
-    bool compact_correct = verify_correctness(*rebuilt, d, 200);
-    printf("  Correctness: %s\n", compact_correct ? "PASS" : "FAIL");
-
-    auto sr_compact = measure_search(
-            *rebuilt, xq, nq, k, rebuilt_gt.data());
-
-    results.push_back({"Compact",
-                        compact_time,
-                        sr_compact.qps,
-                        sr_compact.recall,
-                        compact_correct});
-    printf("  QPS: %.0f  Recall@10: %.4f  (%.1f%% of baseline)\n",
-           sr_compact.qps,
-           sr_compact.recall,
-           sr_compact.qps / sr_baseline.qps * 100);
-
-    // ============================================================
-    // Stage 5: Reorder strategies (save/restore)
-    // ============================================================
-    printf("\n[5/5] Reorder strategies...\n");
-
-    HNSWSnapshot snapshot;
-    snapshot.save(*rebuilt);
-
-    // Reorder only permutes graph+storage — vectors stay the same.
-    // Recall is identical to compact stage (verified on SIFT/NYTimes/GloVe).
-    // We reuse compact GT to avoid per-strategy brute-force on large datasets.
-    // For correctness, we compute brute-force recall on the first strategy only.
-    bool first_strategy = true;
-
-    faiss::ReorderStrategy strategies[] = {
-            faiss::ReorderStrategy::BFS,
-            faiss::ReorderStrategy::RCM,
-            faiss::ReorderStrategy::DFS,
-            faiss::ReorderStrategy::CLUSTER,
-            faiss::ReorderStrategy::WEIGHTED,
-    };
-
-    double best_qps = sr_compact.qps;
-    const char* best_strategy = "None (compact only)";
-
-    for (auto strategy : strategies) {
-        snapshot.restore(*rebuilt);
-
-        auto perm = faiss::generate_permutation(rebuilt->hnsw, strategy);
-
-        t0 = get_time_sec();
-        rebuilt->permute_entries(perm.data());
-        double reorder_time = get_time_sec() - t0;
-
-        bool ok = verify_correctness(*rebuilt, d, 200);
-
-        std::vector<float> dists(nq * k);
-        std::vector<faiss::idx_t> labels(nq * k);
-
-        double best_time = 1e30;
-        for (int r = 0; r < 3; r++) {
-            double t_s = get_time_sec();
-            rebuilt->search(nq, xq, k, dists.data(), labels.data());
-            double t_e = get_time_sec();
-            best_time = std::min(best_time, t_e - t_s);
-        }
-        double qps = nq / best_time;
-
-        double recall;
-        if (first_strategy) {
-            faiss::IndexFlat bf_reordered(d, metric);
-            std::vector<float> reordered_vecs(alive * d);
-            for (size_t i = 0; i < alive; i++) {
-                rebuilt->reconstruct(
-                        i, reordered_vecs.data() + i * d);
+    for (int delete_pct : delete_pcts) {
+        // --- Determine deleted set ---
+        size_t n_delete = nb * delete_pct / 100;
+        std::mt19937 del_rng(999 + delete_pct);
+        std::vector<bool> deleted_set(nb, false);
+        {
+            size_t cnt = 0;
+            while (cnt < n_delete) {
+                size_t idx = del_rng() % nb;
+                if (!deleted_set[idx]) {
+                    deleted_set[idx] = true;
+                    cnt++;
+                }
             }
-            bf_reordered.add(alive, reordered_vecs.data());
+        }
+        size_t alive = nb - n_delete;
 
-            std::vector<faiss::idx_t> reorder_gt(nq * k);
-            std::vector<float> reorder_gt_dists(nq * k);
-            bf_reordered.search(
-                    nq, xq, k, reorder_gt_dists.data(), reorder_gt.data());
-            recall = compute_recall(
-                    labels.data(), reorder_gt.data(), nq, k);
-            first_strategy = false;
-        } else {
-            recall = sr_compact.recall;
+        printf("\n--- delete_pct = %d%% (deleted: %zu, alive: %zu) ---\n",
+               delete_pct, n_delete, alive);
+
+        std::vector<StageResult> results;
+
+        // --- Build alive ID mapping ---
+        std::vector<faiss::idx_t> alive_to_orig;
+        alive_to_orig.reserve(alive);
+        for (size_t i = 0; i < nb; i++) {
+            if (!deleted_set[i]) {
+                alive_to_orig.push_back(static_cast<faiss::idx_t>(i));
+            }
         }
 
-        std::string name =
-                std::string("Reorder (") + strategy_name(strategy) + ")";
-        results.push_back({name, reorder_time, qps, recall, ok});
+        // --- Compute brute-force GT on alive vectors ---
+        printf("  Computing brute-force ground truth on %zu alive vectors...\n", alive);
+        std::vector<faiss::idx_t> gt_alive_origid(nq * k);
+        std::vector<faiss::idx_t> gt_alive_localid(nq * k);
+        {
+            // Use dataset.train (xb) which we kept alive
+            std::vector<float> alive_vecs(alive * d);
+            for (size_t i = 0; i < alive; i++) {
+                memcpy(alive_vecs.data() + i * d,
+                       xb + alive_to_orig[i] * d,
+                       d * sizeof(float));
+            }
 
-        printf("  %-12s  time: %6.3fs  QPS: %8.0f  (%.1f%%)  "
-               "Recall: %.4f  correct: %s\n",
-               strategy_name(strategy),
-               reorder_time,
-               qps,
-               qps / sr_baseline.qps * 100,
-               recall,
-               ok ? "Y" : "N");
+            faiss::IndexFlat brute_force(d, metric);
+            brute_force.add(alive, alive_vecs.data());
 
-        if (qps > best_qps) {
-            best_qps = qps;
-            best_strategy = strategy_name(strategy);
+            std::vector<float> gt_dists(nq * k);
+            brute_force.search(nq, xq, k, gt_dists.data(), gt_alive_localid.data());
+
+            for (size_t i = 0; i < nq * k; i++) {
+                faiss::idx_t local = gt_alive_localid[i];
+                gt_alive_origid[i] = (local >= 0) ? alive_to_orig[local] : -1;
+            }
         }
+
+        SummaryRow sum_row;
+        sum_row.delete_pct = delete_pct;
+
+        // ============================================================
+        // Baseline-B: Overfetch + post-filter
+        // ============================================================
+        {
+            auto overfetch = measure_overfetch_search(
+                    *baseline_a, xq, nq, k, deleted_set,
+                    gt_alive_origid.data(), nb);
+
+            sum_row.baseline_b_qps = overfetch.qps;
+            sum_row.baseline_b_recall = overfetch.recall;
+
+            results.push_back({"Baseline-B",
+                                0.0, // N/A
+                                overfetch.qps,
+                                overfetch.recall,
+                                true});
+            printf("  Baseline-B: QPS: %.0f  Recall: %.4f  (%.1f%% of A)\n",
+                   overfetch.qps,
+                   overfetch.recall,
+                   overfetch.qps / sr_baseline_a.qps * 100);
+        }
+
+        // ============================================================
+        // Baseline-C: New IndexHNSWFlat with only alive vectors
+        // ============================================================
+        {
+            std::vector<float> alive_vecs(alive * d);
+            for (size_t i = 0; i < alive; i++) {
+                memcpy(alive_vecs.data() + i * d,
+                       xb + alive_to_orig[i] * d,
+                       d * sizeof(float));
+            }
+
+            double t0_c = get_time_sec();
+            faiss::IndexHNSWFlat baseline_c(d, M, metric);
+            baseline_c.hnsw.efConstruction = efConstruction;
+            baseline_c.add(alive, alive_vecs.data());
+            double baseline_c_build = get_time_sec() - t0_c;
+
+            baseline_c.hnsw.efSearch = efSearch;
+            auto sr_baseline_c = measure_search(
+                    baseline_c, xq, nq, k, gt_alive_localid.data());
+
+            sum_row.baseline_c_qps = sr_baseline_c.qps;
+            sum_row.baseline_c_recall = sr_baseline_c.recall;
+
+            results.push_back({"Baseline-C",
+                                baseline_c_build,
+                                sr_baseline_c.qps,
+                                sr_baseline_c.recall,
+                                true});
+            printf("  Baseline-C: QPS: %.0f  Recall: %.4f  Build: %.2fs\n",
+                   sr_baseline_c.qps,
+                   sr_baseline_c.recall,
+                   baseline_c_build);
+        }
+
+        // ============================================================
+        // SharedStore Pipeline: Rebuild -> Compact -> Best Reorder
+        // ============================================================
+        printf("  SharedStore pipeline:\n");
+        auto* old_shared =
+                dynamic_cast<faiss::IndexFlatShared*>(shared_index->storage);
+        
+        size_t bitmap_words = (nb + 63) / 64;
+        old_shared->deleted_bitmap.assign(bitmap_words, 0);
+
+        for (size_t i = 0; i < nb; i++) {
+            if (deleted_set[i]) {
+                old_shared->mark_deleted(i);
+            }
+        }
+        
+        double t0 = get_time_sec();
+        faiss::IndexHNSW* rebuilt = faiss::build_new_index(
+                store, *shared_index, M, efConstruction, metric);
+        double rebuild_time = get_time_sec() - t0;
+
+        rebuilt->hnsw.efSearch = efSearch;
+        auto sr_rebuilt = measure_search(
+                *rebuilt, xq, nq, k, gt_alive_localid.data());
+
+        printf("    Rebuilt:       QPS: %.0f  Recall: %.4f  Build: %.2fs\n",
+               sr_rebuilt.qps, sr_rebuilt.recall, rebuild_time);
+
+        // Compact
+        auto* rebuilt_shared =
+                dynamic_cast<faiss::IndexFlatShared*>(rebuilt->storage);
+        faiss::compact_store(*rebuilt_shared);
+        
+        auto sr_compact = measure_search(
+                *rebuilt, xq, nq, k, gt_alive_localid.data());
+        printf("    Compact:       QPS: %.0f  Recall: %.4f\n",
+               sr_compact.qps, sr_compact.recall);
+
+        // Reorder
+        HNSWSnapshot snapshot;
+        snapshot.save(*rebuilt);
+
+        faiss::ReorderStrategy strategies[] = {
+                faiss::ReorderStrategy::BFS,
+                faiss::ReorderStrategy::RCM,
+                faiss::ReorderStrategy::DFS,
+                faiss::ReorderStrategy::CLUSTER,
+                faiss::ReorderStrategy::WEIGHTED,
+        };
+
+        double best_qps = sr_compact.qps;
+        double best_recall = sr_compact.recall;
+        std::string best_strat = "Compact";
+
+        bool first_strategy = true;
+
+        for (auto strategy : strategies) {
+            snapshot.restore(*rebuilt);
+            auto perm = faiss::generate_permutation(rebuilt->hnsw, strategy);
+            rebuilt->permute_entries(perm.data());
+
+            // Measure QPS
+            std::vector<float> dists(nq * k);
+            std::vector<faiss::idx_t> labels(nq * k);
+            double best_time = 1e30;
+            for (int r = 0; r < 3; r++) {
+                double t_s = get_time_sec();
+                rebuilt->search(nq, xq, k, dists.data(), labels.data());
+                double t_e = get_time_sec();
+                best_time = std::min(best_time, t_e - t_s);
+            }
+            double qps = nq / best_time;
+
+            if (qps > best_qps) {
+                best_qps = qps;
+                best_strat = strategy_name(strategy);
+            }
+
+            // Reuse recall from compact for subsequent strategies
+            if (first_strategy) {
+                 // Verify recall by brute-force GT on reordered vectors
+                faiss::IndexFlat bf_reordered(d, metric);
+                std::vector<float> reordered_vecs(alive * d);
+                for (size_t i = 0; i < alive; i++) {
+                    rebuilt->reconstruct(
+                            i, reordered_vecs.data() + i * d);
+                }
+                bf_reordered.add(alive, reordered_vecs.data());
+
+                std::vector<faiss::idx_t> reorder_gt(nq * k);
+                std::vector<float> reorder_gt_dists(nq * k);
+                bf_reordered.search(
+                        nq, xq, k, reorder_gt_dists.data(), reorder_gt.data());
+                best_recall = compute_recall(
+                        labels.data(), reorder_gt.data(), nq, k);
+                first_strategy = false;
+            }
+        }
+        
+        printf("    Best reorder:  QPS: %.0f  Recall: %.4f  [%s]  (%.1f%% of A)\n",
+               best_qps, best_recall, best_strat.c_str(), 
+               best_qps / sr_baseline_a.qps * 100);
+
+        sum_row.shared_best_qps = best_qps;
+        sum_row.shared_best_recall = best_recall;
+        sum_row.best_strategy = best_strat;
+        
+        summary_rows.push_back(sum_row);
+
+        delete rebuilt;
+
+        store->codes = original_store_codes;
+        store->ntotal_store = original_ntotal_store;
+        store->free_list = original_free_list;
+        old_shared->codes = faiss::MaybeOwnedVector<uint8_t>::create_view(
+                store->codes.data(), store->codes.size(), store);
     }
 
-    // ============================================================
-    // Summary
-    // ============================================================
-    printf("\n");
-    print_table_header();
-    for (auto& r : results) {
-        print_table_row(r, sr_baseline.qps);
+    // --- Final Summary Table ---
+    printf("\n=== Cross Delete-Pct Summary ===\n");
+    printf("Del%%  | Baseline-B QPS (Recall)  | Baseline-C QPS (Recall)  | SharedStore QPS (Recall) [Strategy]  | vs A%%\n");
+    printf("------|--------------------------|--------------------------|--------------------------------------|------\n");
+
+    printf("Ref   | Baseline-A (Full):       QPS: %.0f  Recall: %.4f\n", sr_baseline_a.qps, sr_baseline_a.recall);
+    printf("Ref   | Fresh (Shared Full):     QPS: %.0f  Recall: %.4f\n", sr_fresh.qps, sr_fresh.recall);
+    
+    for (const auto& row : summary_rows) {
+        printf(" %2d%%  |    %5.0f (%.4f)        |    %5.0f (%.4f)        |    %5.0f (%.4f) [%-9s]        | %5.1f%%\n",
+               row.delete_pct,
+               row.baseline_b_qps, row.baseline_b_recall,
+               row.baseline_c_qps, row.baseline_c_recall,
+               row.shared_best_qps, row.shared_best_recall, row.best_strategy.c_str(),
+               row.shared_best_qps / sr_baseline_a.qps * 100.0);
     }
 
-    printf("\nBest reorder strategy: %s (QPS: %.0f, %.1f%% of baseline)\n",
-           best_strategy,
-           best_qps,
-           best_qps / sr_baseline.qps * 100);
-
-    if (best_qps / sr_baseline.qps >= 0.95) {
-        printf("RESULT: PASS — within 5%% of baseline\n");
-    } else if (best_qps / sr_baseline.qps >= 0.85) {
-        printf("RESULT: ACCEPTABLE — within 15%% of baseline\n");
-    } else {
-        printf("RESULT: NEEDS WORK — more than 15%% slower\n");
-    }
-
-    // cleanup
-    delete rebuilt;
+    delete baseline_a;
     delete shared_index;
 
     return 0;
