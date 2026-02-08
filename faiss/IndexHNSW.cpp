@@ -650,10 +650,15 @@ void IndexHNSW::link_singletons() {
 }
 
 void IndexHNSW::permute_entries(const idx_t* perm) {
-    auto flat_storage = dynamic_cast<IndexFlatCodes*>(storage);
-    FAISS_THROW_IF_NOT_MSG(
-            flat_storage, "don't know how to permute this index");
-    flat_storage->permute_entries(perm);
+    auto shared_storage = dynamic_cast<IndexFlatShared*>(storage);
+    if (shared_storage) {
+        shared_storage->permute_entries(perm);
+    } else {
+        auto flat_storage = dynamic_cast<IndexFlatCodes*>(storage);
+        FAISS_THROW_IF_NOT_MSG(
+                flat_storage, "don't know how to permute this index");
+        flat_storage->permute_entries(perm);
+    }
     hnsw.permute_entries(perm);
 }
 
