@@ -217,7 +217,7 @@ void IndexBinaryHNSW::search(
     using RH = HeapBlockResultHandler<HNSW::C>;
     RH bres(n, distances_f, labels, k);
 
-#pragma omp parallel
+#pragma omp parallel if (n > 1)
     {
         VisitedTable vt(ntotal);
         std::unique_ptr<DistanceComputer> dis(get_distance_computer());
@@ -232,7 +232,7 @@ void IndexBinaryHNSW::search(
         }
     }
 
-#pragma omp parallel for
+#pragma omp parallel for if (n * k > 1000)
     for (int i = 0; i < n * k; ++i) {
         distances[i] = std::round(distances_f[i]);
     }
@@ -353,7 +353,7 @@ void IndexBinaryHNSWCagra::search(
         std::vector<storage_idx_t> nearest(n);
         std::vector<float> nearest_d(n);
 
-#pragma omp parallel for
+#pragma omp parallel for if (n > 1)
         for (idx_t i = 0; i < n; i++) {
             std::unique_ptr<DistanceComputer> dis(get_distance_computer());
             dis->set_query((float*)(x + i * code_size));
@@ -378,7 +378,7 @@ void IndexBinaryHNSWCagra::search(
                     nearest[i] >= 0, "Could not find a valid entrypoint.");
         }
 
-#pragma omp parallel
+#pragma omp parallel if (n > 1)
         {
             VisitedTable vt(ntotal);
             std::unique_ptr<DistanceComputer> dis(get_distance_computer());
@@ -405,7 +405,7 @@ void IndexBinaryHNSWCagra::search(
             }
         }
 
-#pragma omp parallel for
+#pragma omp parallel for if (n * k > 1000)
         for (int i = 0; i < n * k; ++i) {
             distances[i] = std::round(distances_f[i]);
         }
