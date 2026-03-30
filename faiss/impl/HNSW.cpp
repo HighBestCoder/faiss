@@ -8,6 +8,8 @@
 #include <faiss/impl/HNSW.h>
 
 #include <cstddef>
+#include <limits>
+#include <unordered_map>
 
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/DistanceComputer.h>
@@ -18,7 +20,6 @@
 #ifdef __AVX2__
 #include <immintrin.h>
 
-#include <limits>
 #include <type_traits>
 #endif
 
@@ -242,6 +243,13 @@ void HNSW::shrink_neighbor_list(
     // `faiss::gpu::GpuIndexCagra::copyFrom(IndexHNSWCagra*)` is functional
     std::vector<NodeDistFarther> outsiders;
 
+    auto make_key = [](idx_t a, idx_t b) -> uint64_t {
+        if (a > b)
+            std::swap(a, b);
+        return (uint64_t(a) << 32) | uint64_t(b);
+    };
+    std::unordered_map<uint64_t, float> dis_cache;
+
     while (input.size() > 0) {
         NodeDistFarther v1 = input.top();
         input.pop();
@@ -249,7 +257,15 @@ void HNSW::shrink_neighbor_list(
 
         bool good = true;
         for (NodeDistFarther v2 : output) {
-            float dist_v1_v2 = qdis.symmetric_dis(v2.id, v1.id);
+            uint64_t key = make_key(v2.id, v1.id);
+            auto it = dis_cache.find(key);
+            float dist_v1_v2;
+            if (it != dis_cache.end()) {
+                dist_v1_v2 = it->second;
+            } else {
+                dist_v1_v2 = qdis.symmetric_dis(v2.id, v1.id);
+                dis_cache[key] = dist_v1_v2;
+            }
 
             if (dist_v1_v2 < dist_v1_q) {
                 good = false;
@@ -316,7 +332,8 @@ void add_link(
         storage_idx_t src,
         storage_idx_t dest,
         int level,
-        bool keep_max_size_level0 = false) {
+        bool keep_max_size_level0 = false,
+        float known_dist = -1.0f) {
     size_t begin, end;
     hnsw.neighbor_range(src, level, &begin, &end);
     if (hnsw.neighbors[end - 1] == -1) {
@@ -336,7 +353,9 @@ void add_link(
 
     // copy to resultSet...
     std::priority_queue<NodeDistCloser> resultSet;
-    resultSet.emplace(qdis.symmetric_dis(src, dest), dest);
+    float d_src_dest =
+            known_dist >= 0 ? known_dist : qdis.symmetric_dis(src, dest);
+    resultSet.emplace(d_src_dest, dest);
     for (size_t i = begin; i < end; i++) { // HERE WAS THE BUG
         storage_idx_t neigh = hnsw.neighbors[i];
         resultSet.emplace(qdis.symmetric_dis(src, neigh), neigh);
@@ -376,6 +395,10 @@ void search_neighbors_to_add(
     results.emplace(d_entry_point, entry_point);
     vt.set(entry_point);
 
+    int no_improvement_count = 0;
+    float prev_top_d = std::numeric_limits<float>::max();
+    const int convergence_threshold = 3;
+
     while (!candidates.empty()) {
         // get nearest
         const NodeDistFarther& currEv = candidates.top();
@@ -385,6 +408,19 @@ void search_neighbors_to_add(
         }
         int currNode = currEv.id;
         candidates.pop();
+
+        if (results.size() >= hnsw.efConstruction) {
+            float cur_top_d = results.top().d;
+            if (cur_top_d < prev_top_d) {
+                no_improvement_count = 0;
+                prev_top_d = cur_top_d;
+            } else {
+                no_improvement_count++;
+                if (no_improvement_count >= convergence_threshold) {
+                    break;
+                }
+            }
+        }
 
         // loop over neighbors
         size_t begin, end;
@@ -536,18 +572,31 @@ void HNSW::add_links_starting_from(
     ::faiss::shrink_neighbor_list(ptdis, link_targets, M, keep_max_size_level0);
 
     std::vector<storage_idx_t> neighbors_to_add;
+    std::vector<float> neighbors_dists;
     neighbors_to_add.reserve(link_targets.size());
+    neighbors_dists.reserve(link_targets.size());
     while (!link_targets.empty()) {
         storage_idx_t other_id = link_targets.top().id;
-        add_link(*this, ptdis, pt_id, other_id, level, keep_max_size_level0);
+        float d = link_targets.top().d;
+        add_link(*this, ptdis, pt_id, other_id, level, keep_max_size_level0, d);
         neighbors_to_add.push_back(other_id);
+        neighbors_dists.push_back(d);
         link_targets.pop();
     }
 
     omp_unset_lock(&locks[pt_id]);
-    for (storage_idx_t other_id : neighbors_to_add) {
+    for (size_t ni = 0; ni < neighbors_to_add.size(); ni++) {
+        storage_idx_t other_id = neighbors_to_add[ni];
+        float d = neighbors_dists[ni];
         omp_set_lock(&locks[other_id]);
-        add_link(*this, ptdis, other_id, pt_id, level, keep_max_size_level0);
+        add_link(
+                *this,
+                ptdis,
+                other_id,
+                pt_id,
+                level,
+                keep_max_size_level0,
+                d);
         omp_unset_lock(&locks[other_id]);
     }
     omp_set_lock(&locks[pt_id]);

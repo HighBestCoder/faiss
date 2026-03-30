@@ -230,6 +230,7 @@ set(FAISS_HEADERS
   utils/ordered_key_value.h
   utils/partitioning.h
   utils/prefetch.h
+  utils/numa_helpers.h
   utils/quantize_lut.h
   utils/random.h
   utils/sorting.h

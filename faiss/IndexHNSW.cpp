@@ -9,12 +9,15 @@
 
 #include <omp.h>
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#include <algorithm>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <queue>
 #include <random>
 
@@ -27,6 +30,7 @@
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/ResultHandler.h>
+#include <faiss/utils/numa_helpers.h>
 #include <faiss/utils/random.h>
 #include <faiss/utils/sorting.h>
 
@@ -120,8 +124,6 @@ void hnsw_add_vertices(
             max_level * index_hnsw.d * hnsw.efConstruction);
 
     { // perform add
-        RandomGenerator rng2(789);
-
         int i1 = n;
 
         for (int pt_level = hist.size() - 1;
@@ -133,9 +135,38 @@ void hnsw_add_vertices(
                 printf("Adding %d elements at level %d\n", i1 - i0, pt_level);
             }
 
-            // random permutation to get rid of dataset order bias
-            for (int j = i0; j < i1; j++) {
-                std::swap(order[j], order[j + rng2.rand_int(i1 - j)]);
+            // spatial locality ordering via random projection to 1D
+            // vectors projected onto a random direction are sorted so that
+            // spatially close vectors are inserted consecutively
+            {
+                std::mt19937 rng_proj(12345 + pt_level);
+                std::normal_distribution<float> ndist(0.0f, 1.0f);
+                std::vector<float> proj_dir(d);
+                float norm = 0.0f;
+                for (size_t di = 0; di < d; di++) {
+                    proj_dir[di] = ndist(rng_proj);
+                    norm += proj_dir[di] * proj_dir[di];
+                }
+                norm = 1.0f / std::sqrt(norm + 1e-30f);
+                for (size_t di = 0; di < d; di++) {
+                    proj_dir[di] *= norm;
+                }
+
+                int count = i1 - i0;
+                std::vector<std::pair<float, int>> proj_vals(count);
+                for (int j = 0; j < count; j++) {
+                    storage_idx_t pt_id = order[i0 + j];
+                    const float* vec = x + (pt_id - n0) * d;
+                    float val = 0.0f;
+                    for (size_t di = 0; di < d; di++) {
+                        val += vec[di] * proj_dir[di];
+                    }
+                    proj_vals[j] = {val, order[i0 + j]};
+                }
+                std::sort(proj_vals.begin(), proj_vals.end());
+                for (int j = 0; j < count; j++) {
+                    order[i0 + j] = proj_vals[j].second;
+                }
             }
 
             bool interrupt = false;
@@ -342,6 +373,11 @@ void IndexHNSW::add(idx_t n, const float* x) {
     ntotal = storage->ntotal;
 
     hnsw_add_vertices(*this, n0, n, x, verbose, hnsw.levels.size() == ntotal);
+
+    if (auto* flat = dynamic_cast<IndexFlatCodes*>(storage)) {
+        try_enable_hugepages(
+                flat->codes.data(), flat->codes.size() * sizeof(uint8_t));
+    }
 }
 
 void IndexHNSW::reset() {
