@@ -26,6 +26,7 @@ set(FAISS_TEST_SRC
   test_approx_topk.cpp
   test_RCQ_cropping.cpp
   test_distances_simd.cpp
+  test_distances_fp16.cpp
   test_heap.cpp
   test_code_distance.cpp
   test_hnsw.cpp

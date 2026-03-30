@@ -95,6 +95,7 @@ set(FAISS_SRC
   utils/WorkerThread.cpp
   utils/distances.cpp
   utils/distances_simd.cpp
+  utils/distances_fp16_simd.cpp
   utils/extra_distances.cpp
   utils/hamming.cpp
   utils/partitioning.cpp
@@ -217,6 +218,7 @@ set(FAISS_HEADERS
   utils/NeuralNet.h
   utils/WorkerThread.h
   utils/distances.h
+  utils/distances_fp16.h
   utils/extra_distances-inl.h
   utils/extra_distances.h
   utils/fp16-fp16c.h
