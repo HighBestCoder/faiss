@@ -425,7 +425,6 @@ void search_neighbors_to_add(
         } else {
             // a faster version
 
-            // the following version processes 4 neighbors at a time
             auto update_with_candidate = [&](const storage_idx_t idx,
                                              const float dis) {
                 if (results.size() < hnsw.efConstruction ||
@@ -439,7 +438,7 @@ void search_neighbors_to_add(
             };
 
             int n_buffered = 0;
-            storage_idx_t buffered_ids[4];
+            storage_idx_t buffered_ids[8];
 
             for (size_t j = begin; j < end; j++) {
                 storage_idx_t nodeId = hnsw.neighbors[j];
@@ -454,30 +453,59 @@ void search_neighbors_to_add(
                 buffered_ids[n_buffered] = nodeId;
                 n_buffered += 1;
 
-                if (n_buffered == 4) {
-                    float dis[4];
-                    qdis.distances_batch_4(
+                if (n_buffered == 8) {
+                    float dis[8];
+                    qdis.distances_batch_8(
                             buffered_ids[0],
                             buffered_ids[1],
                             buffered_ids[2],
                             buffered_ids[3],
+                            buffered_ids[4],
+                            buffered_ids[5],
+                            buffered_ids[6],
+                            buffered_ids[7],
                             dis[0],
                             dis[1],
                             dis[2],
-                            dis[3]);
+                            dis[3],
+                            dis[4],
+                            dis[5],
+                            dis[6],
+                            dis[7]);
 
-                    for (size_t id4 = 0; id4 < 4; id4++) {
-                        update_with_candidate(buffered_ids[id4], dis[id4]);
+                    for (size_t id8 = 0; id8 < 8; id8++) {
+                        update_with_candidate(buffered_ids[id8], dis[id8]);
                     }
 
                     n_buffered = 0;
                 }
             }
 
-            // process leftovers
-            for (size_t icnt = 0; icnt < n_buffered; icnt++) {
-                float dis = qdis(buffered_ids[icnt]);
-                update_with_candidate(buffered_ids[icnt], dis);
+            if (n_buffered >= 4) {
+                float dis[4];
+                qdis.distances_batch_4(
+                        buffered_ids[0],
+                        buffered_ids[1],
+                        buffered_ids[2],
+                        buffered_ids[3],
+                        dis[0],
+                        dis[1],
+                        dis[2],
+                        dis[3]);
+
+                for (size_t id4 = 0; id4 < 4; id4++) {
+                    update_with_candidate(buffered_ids[id4], dis[id4]);
+                }
+
+                for (size_t icnt = 4; icnt < n_buffered; icnt++) {
+                    float dis = qdis(buffered_ids[icnt]);
+                    update_with_candidate(buffered_ids[icnt], dis);
+                }
+            } else {
+                for (size_t icnt = 0; icnt < n_buffered; icnt++) {
+                    float dis = qdis(buffered_ids[icnt]);
+                    update_with_candidate(buffered_ids[icnt], dis);
+                }
             }
         }
     }
@@ -651,7 +679,6 @@ int search_from_candidates(
         hnsw.neighbor_range(v0, level, &begin, &end);
 
         // a faster version: reference version in unit test test_hnsw.cpp
-        // the following version processes 4 neighbors at a time
         size_t jmax = begin;
         for (size_t j = begin; j < end; j++) {
             int v1 = hnsw.neighbors[j];
@@ -664,11 +691,11 @@ int search_from_candidates(
         }
 
         int counter = 0;
-        size_t saved_j[4];
+        storage_idx_t saved_j[8];
 
         threshold = res.threshold;
 
-        auto add_to_heap = [&](const size_t idx, const float dis) {
+        auto add_to_heap = [&](const storage_idx_t idx, const float dis) {
             if (!sel || sel->is_member(idx)) {
                 if (dis < threshold) {
                     if (res.add_result(dis, idx)) {
@@ -688,33 +715,67 @@ int search_from_candidates(
             saved_j[counter] = v1;
             counter += vget ? 0 : 1;
 
-            if (counter == 4) {
-                float dis[4];
-                qdis.distances_batch_4(
+            if (counter == 8) {
+                float dis[8];
+                qdis.distances_batch_8(
                         saved_j[0],
                         saved_j[1],
                         saved_j[2],
                         saved_j[3],
+                        saved_j[4],
+                        saved_j[5],
+                        saved_j[6],
+                        saved_j[7],
                         dis[0],
                         dis[1],
                         dis[2],
-                        dis[3]);
+                        dis[3],
+                        dis[4],
+                        dis[5],
+                        dis[6],
+                        dis[7]);
 
-                for (size_t id4 = 0; id4 < 4; id4++) {
-                    add_to_heap(saved_j[id4], dis[id4]);
+                for (size_t id8 = 0; id8 < 8; id8++) {
+                    add_to_heap(saved_j[id8], dis[id8]);
                 }
 
-                ndis += 4;
+                ndis += 8;
 
                 counter = 0;
             }
         }
 
-        for (size_t icnt = 0; icnt < counter; icnt++) {
-            float dis = qdis(saved_j[icnt]);
-            add_to_heap(saved_j[icnt], dis);
+        if (counter >= 4) {
+            float dis[4];
+            qdis.distances_batch_4(
+                    saved_j[0],
+                    saved_j[1],
+                    saved_j[2],
+                    saved_j[3],
+                    dis[0],
+                    dis[1],
+                    dis[2],
+                    dis[3]);
 
-            ndis += 1;
+            for (size_t id4 = 0; id4 < 4; id4++) {
+                add_to_heap(saved_j[id4], dis[id4]);
+            }
+
+            ndis += 4;
+
+            for (size_t icnt = 4; icnt < counter; icnt++) {
+                float dis = qdis(saved_j[icnt]);
+                add_to_heap(saved_j[icnt], dis);
+
+                ndis += 1;
+            }
+        } else {
+            for (size_t icnt = 0; icnt < counter; icnt++) {
+                float dis = qdis(saved_j[icnt]);
+                add_to_heap(saved_j[icnt], dis);
+
+                ndis += 1;
+            }
         }
 
         nstep++;
@@ -766,7 +827,6 @@ std::priority_queue<HNSW::Node> search_from_candidate_unbounded(
         hnsw.neighbor_range(v0, 0, &begin, &end);
 
         // a faster version: reference version in unit test test_hnsw.cpp
-        // the following version processes 4 neighbors at a time
         size_t jmax = begin;
         for (size_t j = begin; j < end; j++) {
             int v1 = hnsw.neighbors[j];
@@ -779,9 +839,9 @@ std::priority_queue<HNSW::Node> search_from_candidate_unbounded(
         }
 
         int counter = 0;
-        size_t saved_j[4];
+        storage_idx_t saved_j[8];
 
-        auto add_to_heap = [&](const size_t idx, const float dis) {
+        auto add_to_heap = [&](const storage_idx_t idx, const float dis) {
             if (top_candidates.top().first > dis ||
                 top_candidates.size() < ef) {
                 candidates.emplace(dis, idx);
@@ -801,33 +861,67 @@ std::priority_queue<HNSW::Node> search_from_candidate_unbounded(
             saved_j[counter] = v1;
             counter += vget ? 0 : 1;
 
-            if (counter == 4) {
-                float dis[4];
-                qdis.distances_batch_4(
+            if (counter == 8) {
+                float dis[8];
+                qdis.distances_batch_8(
                         saved_j[0],
                         saved_j[1],
                         saved_j[2],
                         saved_j[3],
+                        saved_j[4],
+                        saved_j[5],
+                        saved_j[6],
+                        saved_j[7],
                         dis[0],
                         dis[1],
                         dis[2],
-                        dis[3]);
+                        dis[3],
+                        dis[4],
+                        dis[5],
+                        dis[6],
+                        dis[7]);
 
-                for (size_t id4 = 0; id4 < 4; id4++) {
-                    add_to_heap(saved_j[id4], dis[id4]);
+                for (size_t id8 = 0; id8 < 8; id8++) {
+                    add_to_heap(saved_j[id8], dis[id8]);
                 }
 
-                ndis += 4;
+                ndis += 8;
 
                 counter = 0;
             }
         }
 
-        for (size_t icnt = 0; icnt < counter; icnt++) {
-            float dis = qdis(saved_j[icnt]);
-            add_to_heap(saved_j[icnt], dis);
+        if (counter >= 4) {
+            float dis[4];
+            qdis.distances_batch_4(
+                    saved_j[0],
+                    saved_j[1],
+                    saved_j[2],
+                    saved_j[3],
+                    dis[0],
+                    dis[1],
+                    dis[2],
+                    dis[3]);
 
-            ndis += 1;
+            for (size_t id4 = 0; id4 < 4; id4++) {
+                add_to_heap(saved_j[id4], dis[id4]);
+            }
+
+            ndis += 4;
+
+            for (size_t icnt = 4; icnt < counter; icnt++) {
+                float dis = qdis(saved_j[icnt]);
+                add_to_heap(saved_j[icnt], dis);
+
+                ndis += 1;
+            }
+        } else {
+            for (size_t icnt = 0; icnt < counter; icnt++) {
+                float dis = qdis(saved_j[icnt]);
+                add_to_heap(saved_j[icnt], dis);
+
+                ndis += 1;
+            }
         }
 
         stats.nhops += 1;
@@ -860,7 +954,6 @@ HNSWStats greedy_update_nearest(
         size_t ndis = 0;
 
         // a faster version: reference version in unit test test_hnsw.cpp
-        // the following version processes 4 neighbors at a time
         auto update_with_candidate = [&](const storage_idx_t idx,
                                          const float dis) {
             if (dis < d_nearest) {
@@ -870,7 +963,7 @@ HNSWStats greedy_update_nearest(
         };
 
         int n_buffered = 0;
-        storage_idx_t buffered_ids[4];
+        storage_idx_t buffered_ids[8];
 
         for (size_t j = begin; j < end; j++) {
             storage_idx_t v = hnsw.neighbors[j];
@@ -882,30 +975,59 @@ HNSWStats greedy_update_nearest(
             buffered_ids[n_buffered] = v;
             n_buffered += 1;
 
-            if (n_buffered == 4) {
-                float dis[4];
-                qdis.distances_batch_4(
+            if (n_buffered == 8) {
+                float dis[8];
+                qdis.distances_batch_8(
                         buffered_ids[0],
                         buffered_ids[1],
                         buffered_ids[2],
                         buffered_ids[3],
+                        buffered_ids[4],
+                        buffered_ids[5],
+                        buffered_ids[6],
+                        buffered_ids[7],
                         dis[0],
                         dis[1],
                         dis[2],
-                        dis[3]);
+                        dis[3],
+                        dis[4],
+                        dis[5],
+                        dis[6],
+                        dis[7]);
 
-                for (size_t id4 = 0; id4 < 4; id4++) {
-                    update_with_candidate(buffered_ids[id4], dis[id4]);
+                for (size_t id8 = 0; id8 < 8; id8++) {
+                    update_with_candidate(buffered_ids[id8], dis[id8]);
                 }
 
                 n_buffered = 0;
             }
         }
 
-        // process leftovers
-        for (size_t icnt = 0; icnt < n_buffered; icnt++) {
-            float dis = qdis(buffered_ids[icnt]);
-            update_with_candidate(buffered_ids[icnt], dis);
+        if (n_buffered >= 4) {
+            float dis[4];
+            qdis.distances_batch_4(
+                    buffered_ids[0],
+                    buffered_ids[1],
+                    buffered_ids[2],
+                    buffered_ids[3],
+                    dis[0],
+                    dis[1],
+                    dis[2],
+                    dis[3]);
+
+            for (size_t id4 = 0; id4 < 4; id4++) {
+                update_with_candidate(buffered_ids[id4], dis[id4]);
+            }
+
+            for (size_t icnt = 4; icnt < n_buffered; icnt++) {
+                float dis = qdis(buffered_ids[icnt]);
+                update_with_candidate(buffered_ids[icnt], dis);
+            }
+        } else {
+            for (size_t icnt = 0; icnt < n_buffered; icnt++) {
+                float dis = qdis(buffered_ids[icnt]);
+                update_with_candidate(buffered_ids[icnt], dis);
+            }
         }
 
         // update stats
