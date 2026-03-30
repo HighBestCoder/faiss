@@ -8,6 +8,7 @@
 #pragma once
 
 #include <faiss/Index.h>
+#include <faiss/utils/prefetch.h>
 
 namespace faiss {
 
@@ -76,6 +77,8 @@ struct DistanceComputer {
 
     /// compute distance between two stored vectors
     virtual float symmetric_dis(idx_t i, idx_t j) = 0;
+
+    virtual void prefetch(idx_t /*id*/, int /*lines*/ = 3) {}
 
     virtual ~DistanceComputer() {}
 };
@@ -165,6 +168,10 @@ struct NegativeDistanceComputer : DistanceComputer {
         return -basedis->symmetric_dis(i, j);
     }
 
+    void prefetch(idx_t id, int lines = 3) override {
+        basedis->prefetch(id, lines);
+    }
+
     virtual ~NegativeDistanceComputer() override {
         delete basedis;
     }
@@ -185,6 +192,13 @@ struct FlatCodesDistanceComputer : DistanceComputer {
 
     float operator()(idx_t i) override {
         return distance_to_code(codes + i * code_size);
+    }
+
+    void prefetch(idx_t id, int lines = 3) override {
+        const char* ptr = reinterpret_cast<const char*>(codes + id * code_size);
+        for (int l = 0; l < lines; l++) {
+            prefetch_L2(ptr + l * 64);
+        }
     }
 
     /// compute distance of current query to an encoded vector
