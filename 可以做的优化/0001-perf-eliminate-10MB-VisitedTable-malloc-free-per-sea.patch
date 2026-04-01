@@ -1,0 +1,173 @@
+From 100be7eb2cc00033a8ee826c956216dc2a89a8bf Mon Sep 17 00:00:00 2001
+From: Ji You <ji.you@actian.com>
+Date: Wed, 1 Apr 2026 17:54:09 +0800
+Subject: [PATCH] perf: eliminate 10MB VisitedTable malloc/free per search and
+ scale gRPC thread pool
+
+HNSW search at 10M vectors allocates a 10MB VisitedTable on every single
+query (malloc + memset + free), wasting 10-30% of total search latency.
+This is because faiss designed VisitedTable for batch queries (nq >> 1)
+where it gets reused across queries within an OMP thread, but we call
+with nq=1 per gRPC request, so it is created and destroyed every time.
+
+Fix: patch faiss SearchParametersHNSW to accept an external VisitedTable
+pointer, then use a thread_local VisitedTable in FaissVectorIndexDriver
+that persists across searches on the same gRPC polling thread. The
+advance() mechanism resets the table without memset (only every 249th
+search triggers a full memset).
+
+Also scale gRPC sync server thread pool from defaults (NUM_CQS=1,
+MAX_POLLERS=2, limiting concurrency to 2 simultaneous searches) to
+NUM_CQS=2, MIN_POLLERS=2, MAX_POLLERS=8 for 8-16 core machines.
+---
+ .../faiss/faiss_vector_index_driver.cpp       | 11 ++++
+ .../src/server/grpc_api/vde_grpc_server.cpp   | 10 ++++
+ .../faiss-v1.13.1-visitedtable-reuse.patch    | 56 +++++++++++++++++++
+ .../third-party-x64.dockerfile                | 16 ++++++
+ 4 files changed, 93 insertions(+)
+ create mode 100644 support/third-party-build/faiss-v1.13.1-visitedtable-reuse.patch
+
+diff --git a/comp/vde/src/collection/shard/segment/index/index_drivers/faiss/faiss_vector_index_driver.cpp b/comp/vde/src/collection/shard/segment/index/index_drivers/faiss/faiss_vector_index_driver.cpp
+index f3aacee8..c987e7bb 100644
+--- a/comp/vde/src/collection/shard/segment/index/index_drivers/faiss/faiss_vector_index_driver.cpp
++++ b/comp/vde/src/collection/shard/segment/index/index_drivers/faiss/faiss_vector_index_driver.cpp
+@@ -14,6 +14,7 @@
+ #include <faiss/IndexPQ.h>
+ #include <faiss/IndexScalarQuantizer.h>
+ #include <faiss/impl/HNSW.h>
++#include <faiss/impl/AuxIndexStructures.h>
+ #include <faiss/index_io.h>
+ #include <faiss/utils/distances.h>
+ 
+@@ -447,8 +448,18 @@ auto FaissVectorIndexDriver::Search(
+     // id_map[] remap recovers 99% of the regression.
+     faiss::Index* inner = idmap_ ? idmap_->index : raw;
+     if (hnsw_ef > 0 && hnsw_ptr_) {
++      // thread_local VisitedTable reuse: gRPC sync server threads are
++      // long-lived, so thread_local allocates 10MB only on first search
++      // per thread, then reuses it for all subsequent searches.
++      thread_local std::unique_ptr<faiss::VisitedTable> tl_vt;
++      faiss::idx_t ntotal = inner->ntotal;
++      if (!tl_vt || static_cast<faiss::idx_t>(tl_vt->visited.size()) != ntotal) {
++        tl_vt = std::make_unique<faiss::VisitedTable>(ntotal);
++      }
++
+       faiss::SearchParametersHNSW hnsw_params;
+       hnsw_params.efSearch = static_cast<int>(hnsw_ef);
++      hnsw_params.visited_table = tl_vt.get();
+       inner->search(1, query, static_cast<faiss::idx_t>(search_k),
+                     distances.data(), labels.data(), &hnsw_params);
+     } else {
+diff --git a/comp/vde/src/server/grpc_api/vde_grpc_server.cpp b/comp/vde/src/server/grpc_api/vde_grpc_server.cpp
+index 66efdcb2..44d2ff81 100644
+--- a/comp/vde/src/server/grpc_api/vde_grpc_server.cpp
++++ b/comp/vde/src/server/grpc_api/vde_grpc_server.cpp
+@@ -74,6 +74,16 @@ void ActianVectorAIGrpcServer::run() {
+   builder.SetMaxReceiveMessageSize(500 * 1024 * 1024);
+   builder.SetMaxSendMessageSize(500 * 1024 * 1024);
+ 
++  // gRPC sync server thread pool configuration.
++  // Defaults (NUM_CQS=1, MIN_POLLERS=1, MAX_POLLERS=2) severely limit
++  // concurrent search throughput. Scale for 8-16 core machines.
++  builder.SetSyncServerOption(
++      ::grpc::ServerBuilder::SyncServerOption::NUM_CQS, 2);
++  builder.SetSyncServerOption(
++      ::grpc::ServerBuilder::SyncServerOption::MIN_POLLERS, 2);
++  builder.SetSyncServerOption(
++      ::grpc::ServerBuilder::SyncServerOption::MAX_POLLERS, 8);
++
+   spdlog::info("Building gRPC server...");
+ 
+   // Build and start server
+diff --git a/support/third-party-build/faiss-v1.13.1-visitedtable-reuse.patch b/support/third-party-build/faiss-v1.13.1-visitedtable-reuse.patch
+new file mode 100644
+index 00000000..7268277c
+--- /dev/null
++++ b/support/third-party-build/faiss-v1.13.1-visitedtable-reuse.patch
+@@ -0,0 +1,56 @@
++diff --git a/faiss/IndexHNSW.cpp b/faiss/IndexHNSW.cpp
++index 90037830b..f8d84ef5d 100644
++--- a/faiss/IndexHNSW.cpp
+++++ b/faiss/IndexHNSW.cpp
++@@ -249,10 +249,12 @@ void hnsw_search(
++     const HNSW& hnsw = index->hnsw;
++ 
++     int efSearch = hnsw.efSearch;
+++    VisitedTable* external_vt = nullptr;
++     if (params) {
++         if (const SearchParametersHNSW* hnsw_params =
++                     dynamic_cast<const SearchParametersHNSW*>(params)) {
++             efSearch = hnsw_params->efSearch;
+++            external_vt = hnsw_params->visited_table;
++         }
++     }
++     size_t n1 = 0, n2 = 0, ndis = 0, nhops = 0;
++@@ -265,7 +267,16 @@ void hnsw_search(
++ 
++ #pragma omp parallel if (i1 - i0 > 1)
++         {
++-            VisitedTable vt(index->ntotal);
+++            VisitedTable* vt_ptr;
+++            std::unique_ptr<VisitedTable> local_vt;
+++            if (external_vt && (i1 - i0 == 1)) {
+++                vt_ptr = external_vt;
+++                vt_ptr->advance();
+++            } else {
+++                local_vt = std::make_unique<VisitedTable>(index->ntotal);
+++                vt_ptr = local_vt.get();
+++            }
+++
++             typename BlockResultHandler::SingleResultHandler res(bres);
++ 
++             std::unique_ptr<DistanceComputer> dis(
++@@ -276,7 +287,7 @@ void hnsw_search(
++                 res.begin(i);
++                 index->set_query_for_search(dis.get(), x, i);
++ 
++-                HNSWStats stats = hnsw.search(*dis, res, vt, params);
+++                HNSWStats stats = hnsw.search(*dis, res, *vt_ptr, params);
++                 n1 += stats.n1;
++                 n2 += stats.n2;
++                 ndis += stats.ndis;
++diff --git a/faiss/impl/HNSW.h b/faiss/impl/HNSW.h
++index 1a50c2a09..5964a7a42 100644
++--- a/faiss/impl/HNSW.h
+++++ b/faiss/impl/HNSW.h
++@@ -48,6 +48,7 @@ struct SearchParametersHNSW : SearchParameters {
++     int efSearch = 16;
++     bool check_relative_distance = true;
++     bool bounded_queue = true;
+++    VisitedTable* visited_table = nullptr;
++ 
++     ~SearchParametersHNSW() {}
++ };
+diff --git a/support/third-party-build/third-party-x64.dockerfile b/support/third-party-build/third-party-x64.dockerfile
+index 97e43660..e81865ac 100644
+--- a/support/third-party-build/third-party-x64.dockerfile
++++ b/support/third-party-build/third-party-x64.dockerfile
+@@ -224,6 +224,22 @@ RUN echo "========================================" && \
+     rm -f /tmp/faiss-multi-dense-support.patch && \
+     echo "========================================"
+ 
++# ============================================
++# Step 8B: Patch FAISS for VisitedTable Reuse
++# ============================================
++# Performance optimization: Allow external VisitedTable to be passed via
++# SearchParametersHNSW, enabling thread_local reuse and eliminating
++# per-search 10MB malloc+memset+free overhead (10-30% of search time at 10M vectors).
++COPY faiss-v1.13.1-visitedtable-reuse.patch /tmp/faiss-visitedtable-reuse.patch
++RUN echo "========================================" && \
++    echo "Applying FAISS VisitedTable reuse patch" && \
++    echo "========================================" && \
++    cd ${FAISS_SOURCE_DIR} && \
++    git apply /tmp/faiss-visitedtable-reuse.patch && \
++    echo "Patch applied successfully" && \
++    rm -f /tmp/faiss-visitedtable-reuse.patch && \
++    echo "========================================"
++
+ # ============================================
+ # Step 9: Build and Install FAISS
+ # ============================================
+-- 
+2.53.0
+
