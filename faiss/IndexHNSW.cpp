@@ -23,6 +23,7 @@
 
 #include <faiss/Index2Layer.h>
 #include <faiss/IndexFlat.h>
+#include <faiss/IndexFlatShared.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
@@ -151,13 +152,31 @@ void hnsw_add_vertices(
                 int prev_display =
                         verbose && omp_get_thread_num() == 0 ? 0 : -1;
                 size_t counter = 0;
+                const IndexFlatShared* flat_shared_ptr = nullptr;
+                if (!x) {
+                    flat_shared_ptr = dynamic_cast<
+                            const IndexFlatShared*>(
+                            index_hnsw.storage);
+                    FAISS_THROW_IF_NOT_MSG(
+                            flat_shared_ptr,
+                            "x == nullptr requires storage "
+                            "to be IndexFlatShared");
+                }
 
                 // GCC does not have the LLVM segfault issue with dynamic scheduling.
                 // dynamic,64 balances load for HNSW where later insertions are slower.
 #pragma omp for schedule(dynamic, 64)
                 for (int i = i0; i < i1; i++) {
                     storage_idx_t pt_id = order[i];
-                    dis->set_query(x + (pt_id - n0) * d);
+                    if (x) {
+                        dis->set_query(x + (pt_id - n0) * d);
+                    } else {
+                        idx_t storage_id =
+                                flat_shared_ptr->storage_id_map[pt_id];
+                        dis->set_query(
+                                flat_shared_ptr->store->get_vector(
+                                        storage_id));
+                    }
 
                     // cannot break
                     if (interrupt) {
@@ -360,7 +379,9 @@ void IndexHNSW::add(idx_t n, const float* x) {
             "Please use IndexHNSWFlat (or variants) instead of IndexHNSW directly");
     FAISS_THROW_IF_NOT(is_trained);
     int n0 = ntotal;
-    storage->add(n, x);
+    if (x) {
+        storage->add(n, x);
+    }
     ntotal = storage->ntotal;
 
     hnsw_add_vertices(*this, n0, n, x, verbose, hnsw.levels.size() == ntotal);
@@ -649,6 +670,12 @@ void IndexHNSW::link_singletons() {
 }
 
 void IndexHNSW::permute_entries(const idx_t* perm) {
+    auto flat_shared = dynamic_cast<IndexFlatShared*>(storage);
+    if (flat_shared) {
+        flat_shared->permute_entries(perm);
+        hnsw.permute_entries(perm);
+        return;
+    }
     auto flat_storage = dynamic_cast<IndexFlatCodes*>(storage);
     FAISS_THROW_IF_NOT_MSG(
             flat_storage, "don't know how to permute this index");
