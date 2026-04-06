@@ -454,6 +454,7 @@ void search_neighbors_to_add(
                     continue;
                 }
 
+                qdis.prefetch(nodeId);
                 buffered_ids[n_buffered] = nodeId;
                 n_buffered += 1;
 
@@ -704,6 +705,7 @@ int search_from_candidates(
             }
 
             vt.prefetch(v1);
+            qdis.prefetch(v1);
             jmax += 1;
         }
 
@@ -1085,6 +1087,7 @@ std::priority_queue<HNSW::Node> search_from_candidate_unbounded(
             }
 
             vt->prefetch(v1);
+            qdis.prefetch(v1);
             jmax += 1;
         }
 
@@ -1215,6 +1218,7 @@ HNSWStats greedy_update_nearest(
             }
             ndis += 1;
 
+            qdis.prefetch(v);
             buffered_ids[n_buffered] = v;
             n_buffered += 1;
 
