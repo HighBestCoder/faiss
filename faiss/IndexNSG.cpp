@@ -73,7 +73,7 @@ void IndexNSG::search(
     for (idx_t i0 = 0; i0 < n; i0 += check_period) {
         idx_t i1 = std::min(i0 + check_period, n);
 
-#pragma omp parallel
+#pragma omp parallel if (i1 - i0 > 1)
         {
             VisitedTable vt(ntotal, nsg.use_visited_hashset);
 
