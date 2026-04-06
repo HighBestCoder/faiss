@@ -51,6 +51,7 @@ set(FAISS_SRC
   IndexBinaryIVF.cpp
   IndexFlat.cpp
   IndexFlatCodes.cpp
+  IndexFlatShared.cpp
   IndexHNSW.cpp
   IndexIDMap.cpp
   IndexIVF.cpp
@@ -86,6 +87,7 @@ set(FAISS_SRC
   IndexNeuralNetCodec.cpp
   MatrixStats.cpp
   MetaIndexes.cpp
+  SharedVectorStore.cpp
   VectorTransform.cpp
   clone_index.cpp
   index_factory.cpp
@@ -174,6 +176,7 @@ set(FAISS_HEADERS
   IndexBinaryIVF.h
   IndexFlat.h
   IndexFlatCodes.h
+  IndexFlatShared.h
   IndexHNSW.h
   IndexIDMap.h
   IndexIVF.h
@@ -210,6 +213,7 @@ set(FAISS_HEADERS
   MatrixStats.h
   MetaIndexes.h
   MetricType.h
+  SharedVectorStore.h
   VectorTransform.h
   clone_index.h
   index_factory.h
