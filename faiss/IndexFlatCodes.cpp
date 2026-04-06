@@ -135,8 +135,8 @@ struct GenericFlatCodesDistanceComputer : FlatCodesDistanceComputer {
             : FlatCodesDistanceComputer(codec->codes.data(), codec->code_size),
               codec(*codec),
               vd(vd),
-              code_buffer(codec->code_size * 4),
-              vec_buffer(codec->d * 4) {}
+              code_buffer(codec->code_size * 8),
+              vec_buffer(codec->d * 8) {}
 
     void set_query(const float* x) override {
         query = x;
@@ -179,6 +179,39 @@ struct GenericFlatCodesDistanceComputer : FlatCodesDistanceComputer {
         dis1 = vd(query, vec_buffer.data() + vd.d);
         dis2 = vd(query, vec_buffer.data() + 2 * vd.d);
         dis3 = vd(query, vec_buffer.data() + 3 * vd.d);
+    }
+
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) override {
+        uint8_t* cp = code_buffer.data();
+        for (idx_t i : {idx0, idx1, idx2, idx3, idx4, idx5, idx6, idx7}) {
+            memcpy(cp, codes + i * code_size, code_size);
+            cp += code_size;
+        }
+        codec.sa_decode(8, code_buffer.data(), vec_buffer.data());
+        dis0 = vd(query, vec_buffer.data());
+        dis1 = vd(query, vec_buffer.data() + vd.d);
+        dis2 = vd(query, vec_buffer.data() + 2 * vd.d);
+        dis3 = vd(query, vec_buffer.data() + 3 * vd.d);
+        dis4 = vd(query, vec_buffer.data() + 4 * vd.d);
+        dis5 = vd(query, vec_buffer.data() + 5 * vd.d);
+        dis6 = vd(query, vec_buffer.data() + 6 * vd.d);
+        dis7 = vd(query, vec_buffer.data() + 7 * vd.d);
     }
 };
 

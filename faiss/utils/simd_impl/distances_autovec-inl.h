@@ -150,4 +150,116 @@ void fvec_L2sqr_batch_4<AUTOVEC_LEVEL>(
 }
 FAISS_PRAGMA_IMPRECISE_FUNCTION_END
 
+FAISS_PRAGMA_IMPRECISE_FUNCTION_BEGIN
+template <>
+void fvec_inner_product_batch_8<AUTOVEC_LEVEL>(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const float* y4,
+        const float* y5,
+        const float* y6,
+        const float* y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    float d0 = 0;
+    float d1 = 0;
+    float d2 = 0;
+    float d3 = 0;
+    float d4 = 0;
+    float d5 = 0;
+    float d6 = 0;
+    float d7 = 0;
+    FAISS_PRAGMA_IMPRECISE_LOOP
+    for (size_t i = 0; i < d; ++i) {
+        d0 += x[i] * y0[i];
+        d1 += x[i] * y1[i];
+        d2 += x[i] * y2[i];
+        d3 += x[i] * y3[i];
+        d4 += x[i] * y4[i];
+        d5 += x[i] * y5[i];
+        d6 += x[i] * y6[i];
+        d7 += x[i] * y7[i];
+    }
+
+    dis0 = d0;
+    dis1 = d1;
+    dis2 = d2;
+    dis3 = d3;
+    dis4 = d4;
+    dis5 = d5;
+    dis6 = d6;
+    dis7 = d7;
+}
+FAISS_PRAGMA_IMPRECISE_FUNCTION_END
+
+FAISS_PRAGMA_IMPRECISE_FUNCTION_BEGIN
+template <>
+void fvec_L2sqr_batch_8<AUTOVEC_LEVEL>(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const float* y4,
+        const float* y5,
+        const float* y6,
+        const float* y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    float d0 = 0;
+    float d1 = 0;
+    float d2 = 0;
+    float d3 = 0;
+    float d4 = 0;
+    float d5 = 0;
+    float d6 = 0;
+    float d7 = 0;
+    FAISS_PRAGMA_IMPRECISE_LOOP
+    for (size_t i = 0; i < d; ++i) {
+        const float q0 = x[i] - y0[i];
+        const float q1 = x[i] - y1[i];
+        const float q2 = x[i] - y2[i];
+        const float q3 = x[i] - y3[i];
+        const float q4 = x[i] - y4[i];
+        const float q5 = x[i] - y5[i];
+        const float q6 = x[i] - y6[i];
+        const float q7 = x[i] - y7[i];
+        d0 += q0 * q0;
+        d1 += q1 * q1;
+        d2 += q2 * q2;
+        d3 += q3 * q3;
+        d4 += q4 * q4;
+        d5 += q5 * q5;
+        d6 += q6 * q6;
+        d7 += q7 * q7;
+    }
+
+    dis0 = d0;
+    dis1 = d1;
+    dis2 = d2;
+    dis3 = d3;
+    dis4 = d4;
+    dis5 = d5;
+    dis6 = d6;
+    dis7 = d7;
+}
+FAISS_PRAGMA_IMPRECISE_FUNCTION_END
+
 } // namespace faiss

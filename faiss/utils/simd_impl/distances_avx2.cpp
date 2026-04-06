@@ -1182,4 +1182,194 @@ int fvec_madd_and_argmin<SIMDLevel::AVX2>(
     return fvec_madd_and_argmin_sse(n, a, bf, b, c);
 }
 
+FAISS_PRAGMA_IMPRECISE_FUNCTION_BEGIN
+template <>
+void fvec_inner_product_batch_8<SIMDLevel::AVX2>(
+        const float* __restrict x,
+        const float* __restrict y0,
+        const float* __restrict y1,
+        const float* __restrict y2,
+        const float* __restrict y3,
+        const float* __restrict y4,
+        const float* __restrict y5,
+        const float* __restrict y6,
+        const float* __restrict y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    auto horizontal_sum_256 = [](__m256 v) -> float {
+        const __m128 v_lo = _mm256_castps256_ps128(v);
+        const __m128 v_hi = _mm256_extractf128_ps(v, 1);
+        __m128 sum = _mm_add_ps(v_lo, v_hi);
+        __m128 shuf = _mm_shuffle_ps(sum, sum, _MM_SHUFFLE(0, 0, 3, 2));
+        sum = _mm_add_ps(sum, shuf);
+        shuf = _mm_shuffle_ps(sum, sum, _MM_SHUFFLE(0, 0, 0, 1));
+        sum = _mm_add_ps(sum, shuf);
+        return _mm_cvtss_f32(sum);
+    };
+
+    size_t i = 0;
+    const size_t d8 = d / 8 * 8;
+    __m256 d0v = _mm256_setzero_ps();
+    __m256 d1v = _mm256_setzero_ps();
+    __m256 d2v = _mm256_setzero_ps();
+    __m256 d3v = _mm256_setzero_ps();
+    __m256 d4v = _mm256_setzero_ps();
+    __m256 d5v = _mm256_setzero_ps();
+    __m256 d6v = _mm256_setzero_ps();
+    __m256 d7v = _mm256_setzero_ps();
+
+    for (; i < d8; i += 8) {
+        const __m256 xv = _mm256_loadu_ps(x + i);
+        d0v = _mm256_fmadd_ps(xv, _mm256_loadu_ps(y0 + i), d0v);
+        d1v = _mm256_fmadd_ps(xv, _mm256_loadu_ps(y1 + i), d1v);
+        d2v = _mm256_fmadd_ps(xv, _mm256_loadu_ps(y2 + i), d2v);
+        d3v = _mm256_fmadd_ps(xv, _mm256_loadu_ps(y3 + i), d3v);
+        d4v = _mm256_fmadd_ps(xv, _mm256_loadu_ps(y4 + i), d4v);
+        d5v = _mm256_fmadd_ps(xv, _mm256_loadu_ps(y5 + i), d5v);
+        d6v = _mm256_fmadd_ps(xv, _mm256_loadu_ps(y6 + i), d6v);
+        d7v = _mm256_fmadd_ps(xv, _mm256_loadu_ps(y7 + i), d7v);
+    }
+
+    float d0 = horizontal_sum_256(d0v);
+    float d1 = horizontal_sum_256(d1v);
+    float d2 = horizontal_sum_256(d2v);
+    float d3 = horizontal_sum_256(d3v);
+    float d4 = horizontal_sum_256(d4v);
+    float d5 = horizontal_sum_256(d5v);
+    float d6 = horizontal_sum_256(d6v);
+    float d7 = horizontal_sum_256(d7v);
+
+    FAISS_PRAGMA_IMPRECISE_LOOP
+    for (; i < d; ++i) {
+        d0 += x[i] * y0[i];
+        d1 += x[i] * y1[i];
+        d2 += x[i] * y2[i];
+        d3 += x[i] * y3[i];
+        d4 += x[i] * y4[i];
+        d5 += x[i] * y5[i];
+        d6 += x[i] * y6[i];
+        d7 += x[i] * y7[i];
+    }
+
+    dis0 = d0;
+    dis1 = d1;
+    dis2 = d2;
+    dis3 = d3;
+    dis4 = d4;
+    dis5 = d5;
+    dis6 = d6;
+    dis7 = d7;
+}
+FAISS_PRAGMA_IMPRECISE_FUNCTION_END
+
+FAISS_PRAGMA_IMPRECISE_FUNCTION_BEGIN
+template <>
+void fvec_L2sqr_batch_8<SIMDLevel::AVX2>(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const float* y4,
+        const float* y5,
+        const float* y6,
+        const float* y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    auto horizontal_sum_256 = [](__m256 v) -> float {
+        const __m128 v_lo = _mm256_castps256_ps128(v);
+        const __m128 v_hi = _mm256_extractf128_ps(v, 1);
+        __m128 sum = _mm_add_ps(v_lo, v_hi);
+        __m128 shuf = _mm_shuffle_ps(sum, sum, _MM_SHUFFLE(0, 0, 3, 2));
+        sum = _mm_add_ps(sum, shuf);
+        shuf = _mm_shuffle_ps(sum, sum, _MM_SHUFFLE(0, 0, 0, 1));
+        sum = _mm_add_ps(sum, shuf);
+        return _mm_cvtss_f32(sum);
+    };
+
+    size_t i = 0;
+    const size_t d8 = d / 8 * 8;
+    __m256 d0v = _mm256_setzero_ps();
+    __m256 d1v = _mm256_setzero_ps();
+    __m256 d2v = _mm256_setzero_ps();
+    __m256 d3v = _mm256_setzero_ps();
+    __m256 d4v = _mm256_setzero_ps();
+    __m256 d5v = _mm256_setzero_ps();
+    __m256 d6v = _mm256_setzero_ps();
+    __m256 d7v = _mm256_setzero_ps();
+
+    for (; i < d8; i += 8) {
+        const __m256 xv = _mm256_loadu_ps(x + i);
+        const __m256 q0 = _mm256_sub_ps(xv, _mm256_loadu_ps(y0 + i));
+        const __m256 q1 = _mm256_sub_ps(xv, _mm256_loadu_ps(y1 + i));
+        const __m256 q2 = _mm256_sub_ps(xv, _mm256_loadu_ps(y2 + i));
+        const __m256 q3 = _mm256_sub_ps(xv, _mm256_loadu_ps(y3 + i));
+        const __m256 q4 = _mm256_sub_ps(xv, _mm256_loadu_ps(y4 + i));
+        const __m256 q5 = _mm256_sub_ps(xv, _mm256_loadu_ps(y5 + i));
+        const __m256 q6 = _mm256_sub_ps(xv, _mm256_loadu_ps(y6 + i));
+        const __m256 q7 = _mm256_sub_ps(xv, _mm256_loadu_ps(y7 + i));
+        d0v = _mm256_fmadd_ps(q0, q0, d0v);
+        d1v = _mm256_fmadd_ps(q1, q1, d1v);
+        d2v = _mm256_fmadd_ps(q2, q2, d2v);
+        d3v = _mm256_fmadd_ps(q3, q3, d3v);
+        d4v = _mm256_fmadd_ps(q4, q4, d4v);
+        d5v = _mm256_fmadd_ps(q5, q5, d5v);
+        d6v = _mm256_fmadd_ps(q6, q6, d6v);
+        d7v = _mm256_fmadd_ps(q7, q7, d7v);
+    }
+
+    float d0 = horizontal_sum_256(d0v);
+    float d1 = horizontal_sum_256(d1v);
+    float d2 = horizontal_sum_256(d2v);
+    float d3 = horizontal_sum_256(d3v);
+    float d4 = horizontal_sum_256(d4v);
+    float d5 = horizontal_sum_256(d5v);
+    float d6 = horizontal_sum_256(d6v);
+    float d7 = horizontal_sum_256(d7v);
+
+    FAISS_PRAGMA_IMPRECISE_LOOP
+    for (; i < d; ++i) {
+        const float q0 = x[i] - y0[i];
+        const float q1 = x[i] - y1[i];
+        const float q2 = x[i] - y2[i];
+        const float q3 = x[i] - y3[i];
+        const float q4 = x[i] - y4[i];
+        const float q5 = x[i] - y5[i];
+        const float q6 = x[i] - y6[i];
+        const float q7 = x[i] - y7[i];
+        d0 += q0 * q0;
+        d1 += q1 * q1;
+        d2 += q2 * q2;
+        d3 += q3 * q3;
+        d4 += q4 * q4;
+        d5 += q5 * q5;
+        d6 += q6 * q6;
+        d7 += q7 * q7;
+    }
+
+    dis0 = d0;
+    dis1 = d1;
+    dis2 = d2;
+    dis3 = d3;
+    dis4 = d4;
+    dis5 = d5;
+    dis6 = d6;
+    dis7 = d7;
+}
+FAISS_PRAGMA_IMPRECISE_FUNCTION_END
+
 } // namespace faiss

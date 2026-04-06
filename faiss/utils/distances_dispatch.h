@@ -90,6 +90,88 @@ inline void fvec_L2sqr_batch_4_dispatch(
             fvec_L2sqr_batch_4, x, y0, y1, y2, y3, d, dis0, dis1, dis2, dis3);
 }
 
+inline void fvec_inner_product_batch_8_dispatch(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const float* y4,
+        const float* y5,
+        const float* y6,
+        const float* y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    DISPATCH_SIMDLevel(
+            fvec_inner_product_batch_8,
+            x,
+            y0,
+            y1,
+            y2,
+            y3,
+            y4,
+            y5,
+            y6,
+            y7,
+            d,
+            dis0,
+            dis1,
+            dis2,
+            dis3,
+            dis4,
+            dis5,
+            dis6,
+            dis7);
+}
+
+inline void fvec_L2sqr_batch_8_dispatch(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const float* y4,
+        const float* y5,
+        const float* y6,
+        const float* y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    DISPATCH_SIMDLevel(
+            fvec_L2sqr_batch_8,
+            x,
+            y0,
+            y1,
+            y2,
+            y3,
+            y4,
+            y5,
+            y6,
+            y7,
+            d,
+            dis0,
+            dis1,
+            dis2,
+            dis3,
+            dis4,
+            dis5,
+            dis6,
+            dis7);
+}
+
 inline void fvec_L2sqr_ny_transposed_dispatch(
         float* dis,
         const float* x,

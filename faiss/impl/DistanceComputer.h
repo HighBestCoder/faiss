@@ -53,6 +53,28 @@ struct DistanceComputer {
         dis3 = d3;
     }
 
+    /// compute distances of current query to 8 stored vectors.
+    virtual void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) {
+        distances_batch_4(idx0, idx1, idx2, idx3, dis0, dis1, dis2, dis3);
+        distances_batch_4(idx4, idx5, idx6, idx7, dis4, dis5, dis6, dis7);
+    }
+
     /// compute distance between two stored vectors
     virtual float symmetric_dis(idx_t i, idx_t j) = 0;
 
@@ -93,6 +115,38 @@ struct NegativeDistanceComputer : DistanceComputer {
         dis1 = -dis1;
         dis2 = -dis2;
         dis3 = -dis3;
+    }
+
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) override {
+        basedis->distances_batch_8(
+                idx0, idx1, idx2, idx3,
+                idx4, idx5, idx6, idx7,
+                dis0, dis1, dis2, dis3,
+                dis4, dis5, dis6, dis7);
+        dis0 = -dis0;
+        dis1 = -dis1;
+        dis2 = -dis2;
+        dis3 = -dis3;
+        dis4 = -dis4;
+        dis5 = -dis5;
+        dis6 = -dis6;
+        dis7 = -dis7;
     }
 
     /// compute distance between two stored vectors
