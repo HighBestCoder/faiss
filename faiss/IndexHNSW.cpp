@@ -250,10 +250,12 @@ void hnsw_search(
     const HNSW& hnsw = index->hnsw;
 
     int efSearch = hnsw.efSearch;
+    VisitedTable* external_vt = nullptr;
     if (params) {
         if (const SearchParametersHNSW* hnsw_params =
                     dynamic_cast<const SearchParametersHNSW*>(params)) {
             efSearch = hnsw_params->efSearch;
+            external_vt = hnsw_params->visited_table;
         }
     }
     size_t n1 = 0, n2 = 0, ndis = 0, nhops = 0;
@@ -266,7 +268,17 @@ void hnsw_search(
 
 #pragma omp parallel if (i1 - i0 > 1)
         {
-            VisitedTable vt(index->ntotal, hnsw.use_visited_hashset);
+            VisitedTable* vt_ptr;
+            std::unique_ptr<VisitedTable> local_vt;
+            if (external_vt && (i1 - i0 == 1)) {
+                vt_ptr = external_vt;
+                vt_ptr->advance();
+            } else {
+                local_vt = std::make_unique<VisitedTable>(
+                        index->ntotal, hnsw.use_visited_hashset);
+                vt_ptr = local_vt.get();
+            }
+
             typename BlockResultHandler::SingleResultHandler res(bres);
 
             std::unique_ptr<DistanceComputer> dis(
@@ -277,7 +289,7 @@ void hnsw_search(
                 res.begin(i);
                 dis->set_query(x + i * index->d);
 
-                HNSWStats stats = hnsw.search(*dis, index, res, vt, params);
+                HNSWStats stats = hnsw.search(*dis, index, res, *vt_ptr, params);
                 n1 += stats.n1;
                 n2 += stats.n2;
                 ndis += stats.ndis;
