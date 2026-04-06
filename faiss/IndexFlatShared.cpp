@@ -627,6 +627,9 @@ void IndexFlatShared::add(idx_t n, const float* x) {
     FAISS_THROW_IF_NOT(store);
     for (idx_t i = 0; i < n; i++) {
         idx_t slot = store->allocate_slot(x + i * d);
+        if (is_identity_map && slot != (idx_t)(ntotal + i)) {
+            is_identity_map = false;
+        }
         storage_id_map.push_back(slot);
     }
     ntotal += n;
@@ -659,17 +662,88 @@ FlatCodesDistanceComputer* IndexFlatShared::get_FlatCodesDistanceComputer()
 }
 
 void IndexFlatShared::permute_entries(const idx_t* perm) {
-    std::vector<idx_t> new_map(ntotal);
-    for (idx_t i = 0; i < ntotal; i++) {
-        new_map[i] = storage_id_map[perm[i]];
+    if (is_identity_map) {
+        // Mode A: physically move vector data via cycle-following.
+        // perm[new_id] = old_id. After this, store[new_id] holds old_id's data.
+        // is_identity_map stays true because storage_id_map remains identity.
+        size_t cs = store->code_size;
+        uint8_t* base = store->codes.data();
+        std::vector<uint8_t> tmp(cs);
+        std::vector<bool> done(ntotal, false);
+
+        for (idx_t i = 0; i < ntotal; i++) {
+            if (done[i] || perm[i] == i)
+                continue;
+
+            memcpy(tmp.data(), base + (size_t)i * cs, cs);
+            idx_t j = i;
+            while (true) {
+                idx_t src = perm[j];
+                done[j] = true;
+                if (src == i) {
+                    memcpy(base + (size_t)j * cs, tmp.data(), cs);
+                    done[j] = true;
+                    break;
+                }
+                memcpy(base + (size_t)j * cs, base + (size_t)src * cs, cs);
+                j = src;
+            }
+        }
+    } else {
+        // Mode B: indirect remap only
+        std::vector<idx_t> new_map(ntotal);
+        for (idx_t i = 0; i < ntotal; i++) {
+            new_map[i] = storage_id_map[perm[i]];
+        }
+        std::swap(storage_id_map, new_map);
     }
-    std::swap(storage_id_map, new_map);
 }
 
 void IndexFlatShared::reset() {
     storage_id_map.clear();
     deleted_bitmap.clear();
     ntotal = 0;
+}
+
+/*************************************************************
+ * compact_store — cycle-following in-place permutation to make
+ * store[i] hold local_id i's vector. After this,
+ * storage_id_map[i] == i, free_list is cleared,
+ * store.ntotal_store == index.ntotal.
+ *************************************************************/
+
+void compact_store(IndexFlatShared& index) {
+    FAISS_THROW_IF_NOT(index.store);
+    auto& store = *index.store;
+    auto& id_map = index.storage_id_map;
+    size_t n = index.ntotal;
+    size_t cs = store.code_size;
+    const uint8_t* old_base = store.codes.data();
+
+    // id_map[i] maps local_id i to a store slot in [0, ntotal_store).
+    // After compaction: store[i] = local_id i's vector, id_map = identity.
+    // Uses a temporary buffer of n*cs bytes (freed immediately after swap).
+    std::vector<uint8_t> compacted(n * cs);
+    for (size_t i = 0; i < n; i++) {
+        memcpy(compacted.data() + i * cs,
+               old_base + (size_t)id_map[i] * cs,
+               cs);
+    }
+    store.codes = std::move(compacted);
+
+    for (size_t i = 0; i < n; i++) {
+        id_map[i] = i;
+    }
+    index.is_identity_map = true;
+
+    store.ntotal_store = n;
+    store.free_list.clear();
+
+    size_t bitmap_words = (n + 63) / 64;
+    index.deleted_bitmap.assign(bitmap_words, 0);
+
+    index.codes = MaybeOwnedVector<uint8_t>::create_view(
+            store.codes.data(), store.codes.size(), index.store);
 }
 
 /*************************************************************

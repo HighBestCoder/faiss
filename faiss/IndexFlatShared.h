@@ -67,6 +67,14 @@ struct IndexFlatShared : IndexFlatCodes {
     void reset() override;
 };
 
+/// Compact the store so that store[i] holds local_id i's vector data.
+/// After compaction, storage_id_map becomes identity, free_list is cleared,
+/// and store.ntotal_store == index.ntotal (alive count).
+/// Uses cycle-following in-place permutation — O(1) temp (one vector).
+///
+/// Precondition: called after rebuild, index.ntotal == number of alive vectors.
+void compact_store(IndexFlatShared& index);
+
 void build_storage_id_map(
         const SharedVectorStore& store,
         const std::vector<uint64_t>& deleted_bitmap,
