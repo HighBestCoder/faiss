@@ -10,6 +10,7 @@
 #include <immintrin.h>
 
 #define AUTOVEC_LEVEL SIMDLevel::AVX2
+#define FAISS_SKIP_AUTOVEC_BATCH_8 // AVX2 has dedicated batch_8 below
 // NOLINTNEXTLINE(facebook-hte-InlineHeader)
 #include <faiss/utils/simd_impl/distances_autovec-inl.h>
 
