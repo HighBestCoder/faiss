@@ -217,6 +217,57 @@ struct FlatL2Dis : FlatCodesDistanceComputer {
         dp2 = dp2_;
         dp3 = dp3_;
     }
+
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) final override {
+        ndis += 8;
+
+        const float* __restrict y0 =
+                reinterpret_cast<const float*>(codes + idx0 * code_size);
+        const float* __restrict y1 =
+                reinterpret_cast<const float*>(codes + idx1 * code_size);
+        const float* __restrict y2 =
+                reinterpret_cast<const float*>(codes + idx2 * code_size);
+        const float* __restrict y3 =
+                reinterpret_cast<const float*>(codes + idx3 * code_size);
+        const float* __restrict y4 =
+                reinterpret_cast<const float*>(codes + idx4 * code_size);
+        const float* __restrict y5 =
+                reinterpret_cast<const float*>(codes + idx5 * code_size);
+        const float* __restrict y6 =
+                reinterpret_cast<const float*>(codes + idx6 * code_size);
+        const float* __restrict y7 =
+                reinterpret_cast<const float*>(codes + idx7 * code_size);
+
+        float dp0 = 0, dp1 = 0, dp2 = 0, dp3 = 0;
+        float dp4 = 0, dp5 = 0, dp6 = 0, dp7 = 0;
+        fvec_L2sqr_batch_8<SL>(
+                q, y0, y1, y2, y3, y4, y5, y6, y7, d,
+                dp0, dp1, dp2, dp3, dp4, dp5, dp6, dp7);
+        dis0 = dp0;
+        dis1 = dp1;
+        dis2 = dp2;
+        dis3 = dp3;
+        dis4 = dp4;
+        dis5 = dp5;
+        dis6 = dp6;
+        dis7 = dp7;
+    }
 };
 
 template <SIMDLevel SL>
@@ -282,6 +333,57 @@ struct FlatIPDis : FlatCodesDistanceComputer {
         dis1 = dp1;
         dis2 = dp2;
         dis3 = dp3;
+    }
+
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) final override {
+        ndis += 8;
+
+        const float* __restrict y0 =
+                reinterpret_cast<const float*>(codes + idx0 * code_size);
+        const float* __restrict y1 =
+                reinterpret_cast<const float*>(codes + idx1 * code_size);
+        const float* __restrict y2 =
+                reinterpret_cast<const float*>(codes + idx2 * code_size);
+        const float* __restrict y3 =
+                reinterpret_cast<const float*>(codes + idx3 * code_size);
+        const float* __restrict y4 =
+                reinterpret_cast<const float*>(codes + idx4 * code_size);
+        const float* __restrict y5 =
+                reinterpret_cast<const float*>(codes + idx5 * code_size);
+        const float* __restrict y6 =
+                reinterpret_cast<const float*>(codes + idx6 * code_size);
+        const float* __restrict y7 =
+                reinterpret_cast<const float*>(codes + idx7 * code_size);
+
+        float dp0 = 0, dp1 = 0, dp2 = 0, dp3 = 0;
+        float dp4 = 0, dp5 = 0, dp6 = 0, dp7 = 0;
+        fvec_inner_product_batch_8<SL>(
+                q, y0, y1, y2, y3, y4, y5, y6, y7, d,
+                dp0, dp1, dp2, dp3, dp4, dp5, dp6, dp7);
+        dis0 = dp0;
+        dis1 = dp1;
+        dis2 = dp2;
+        dis3 = dp3;
+        dis4 = dp4;
+        dis5 = dp5;
+        dis6 = dp6;
+        dis7 = dp7;
     }
 };
 
@@ -415,6 +517,66 @@ struct FlatL2WithNormsDis : FlatCodesDistanceComputer {
         dis1 = query_l2norm + l2norms[idx1] - 2 * dp1;
         dis2 = query_l2norm + l2norms[idx2] - 2 * dp2;
         dis3 = query_l2norm + l2norms[idx3] - 2 * dp3;
+    }
+
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) final override {
+        ndis += 8;
+
+        const float* __restrict y0 =
+                reinterpret_cast<const float*>(codes + idx0 * code_size);
+        const float* __restrict y1 =
+                reinterpret_cast<const float*>(codes + idx1 * code_size);
+        const float* __restrict y2 =
+                reinterpret_cast<const float*>(codes + idx2 * code_size);
+        const float* __restrict y3 =
+                reinterpret_cast<const float*>(codes + idx3 * code_size);
+        const float* __restrict y4 =
+                reinterpret_cast<const float*>(codes + idx4 * code_size);
+        const float* __restrict y5 =
+                reinterpret_cast<const float*>(codes + idx5 * code_size);
+        const float* __restrict y6 =
+                reinterpret_cast<const float*>(codes + idx6 * code_size);
+        const float* __restrict y7 =
+                reinterpret_cast<const float*>(codes + idx7 * code_size);
+
+        prefetch_L2(l2norms + idx0);
+        prefetch_L2(l2norms + idx1);
+        prefetch_L2(l2norms + idx2);
+        prefetch_L2(l2norms + idx3);
+        prefetch_L2(l2norms + idx4);
+        prefetch_L2(l2norms + idx5);
+        prefetch_L2(l2norms + idx6);
+        prefetch_L2(l2norms + idx7);
+
+        float dp0 = 0, dp1 = 0, dp2 = 0, dp3 = 0;
+        float dp4 = 0, dp5 = 0, dp6 = 0, dp7 = 0;
+        fvec_inner_product_batch_8<SL>(
+                q, y0, y1, y2, y3, y4, y5, y6, y7, d,
+                dp0, dp1, dp2, dp3, dp4, dp5, dp6, dp7);
+        dis0 = query_l2norm + l2norms[idx0] - 2 * dp0;
+        dis1 = query_l2norm + l2norms[idx1] - 2 * dp1;
+        dis2 = query_l2norm + l2norms[idx2] - 2 * dp2;
+        dis3 = query_l2norm + l2norms[idx3] - 2 * dp3;
+        dis4 = query_l2norm + l2norms[idx4] - 2 * dp4;
+        dis5 = query_l2norm + l2norms[idx5] - 2 * dp5;
+        dis6 = query_l2norm + l2norms[idx6] - 2 * dp6;
+        dis7 = query_l2norm + l2norms[idx7] - 2 * dp7;
     }
 };
 
