@@ -43,6 +43,7 @@ set(FAISS_TEST_SRC
   test_custom_result_handler.cpp
   # These tests work in both static and DD modes (uniform SIMDConfig API)
   test_distances_simd.cpp
+  test_distances_fp16.cpp
   test_simd_levels.cpp
   test_fast_scan_distance_to_code.cpp
 )
