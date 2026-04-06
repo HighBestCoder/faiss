@@ -28,6 +28,7 @@
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/ResultHandler.h>
 #include <faiss/impl/VisitedTable.h>
+#include <faiss/utils/numa_helpers.h>
 #include <faiss/utils/random.h>
 #include <faiss/utils/sorting.h>
 
@@ -351,6 +352,13 @@ void IndexHNSW::add(idx_t n, const float* x) {
     ntotal = storage->ntotal;
 
     hnsw_add_vertices(*this, n0, n, x, verbose, hnsw.levels.size() == ntotal);
+
+    // Enable transparent huge pages on vector storage for better TLB performance
+    auto* flat = dynamic_cast<IndexFlatCodes*>(storage);
+    if (flat) {
+        try_enable_hugepages(
+                flat->codes.data(), flat->codes.size() * sizeof(uint8_t));
+    }
 }
 
 void IndexHNSW::reset() {

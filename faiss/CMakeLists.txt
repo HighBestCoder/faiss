@@ -291,6 +291,7 @@ set(FAISS_HEADERS
   utils/fp16.h
   utils/hamming-inl.h
   utils/hamming.h
+  utils/numa_helpers.h
   utils/ordered_key_value.h
   utils/partitioning.h
   utils/prefetch.h
