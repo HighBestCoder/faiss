@@ -10,6 +10,7 @@
 #include <immintrin.h>
 
 #define AUTOVEC_LEVEL SIMDLevel::AVX512
+#define FAISS_SKIP_AUTOVEC_BATCH_8 // AVX512 has dedicated batch_8 below
 #include <faiss/utils/simd_impl/distances_autovec-inl.h>
 #include <faiss/utils/simd_impl/distances_sse-inl.h>
 #include <faiss/utils/transpose/transpose-avx512-inl.h>

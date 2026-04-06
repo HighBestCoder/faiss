@@ -150,6 +150,11 @@ void fvec_L2sqr_batch_4<AUTOVEC_LEVEL>(
 }
 FAISS_PRAGMA_IMPRECISE_FUNCTION_END
 
+// batch_8 specializations for NONE/NEON/SVE only.
+// AVX2 and AVX512 have dedicated implementations in their own .cpp files,
+// so we skip generating these when compiling those targets.
+#ifndef FAISS_SKIP_AUTOVEC_BATCH_8
+
 FAISS_PRAGMA_IMPRECISE_FUNCTION_BEGIN
 template <>
 void fvec_inner_product_batch_8<AUTOVEC_LEVEL>(
@@ -261,5 +266,7 @@ void fvec_L2sqr_batch_8<AUTOVEC_LEVEL>(
     dis7 = d7;
 }
 FAISS_PRAGMA_IMPRECISE_FUNCTION_END
+
+#endif // FAISS_SKIP_AUTOVEC_BATCH_8
 
 } // namespace faiss
