@@ -9,10 +9,10 @@ MKL_FLAGS    := -L/usr/lib/x86_64-linux-gnu \
                 -lmkl_intel_lp64 -lmkl_intel_thread -lmkl_core \
                 -liomp5 -lpthread -lm -ldl
 
-.PHONY: all clean bench-v0 bench-opt lib
+.PHONY: all clean bench-v0 bench-opt bench-rabitq lib
 
 # Build everything
-all: bench-v0 bench-opt
+all: bench-v0 bench-opt bench-rabitq
 
 # V0 baseline bench (linked against original v1.14.1 lib)
 bench-v0: faiss-1.14.1-origin/bench
@@ -32,9 +32,18 @@ bench_task: bench_task.cpp
 		$(MKL_FLAGS) \
 		-Wl,-rpath,$(OPT_LIB)
 
+# RaBitQ bench (linked against our modified lib)
+bench-rabitq: bench_rabitq
+
+bench_rabitq: bench_rabitq.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< \
+		-L$(OPT_LIB) -lfaiss_avx512 \
+		$(MKL_FLAGS) \
+		-Wl,-rpath,$(OPT_LIB)
+
 # Rebuild FAISS library (runs cmake + make)
 lib:
 	cd $(FAISS_ROOT) && bash llm/build.sh
 
 clean:
-	rm -f bench_task faiss-1.14.1-origin/bench
+	rm -f bench_task bench_rabitq faiss-1.14.1-origin/bench
