@@ -24,6 +24,7 @@
 #include <faiss/Index2Layer.h>
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexFlatShared.h>
+#include <faiss/HNSWReorder.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
@@ -290,9 +291,12 @@ void hnsw_search(
             VisitedTable* vt_ptr;
             std::unique_ptr<VisitedTable> local_vt;
             if (external_vt && (i1 - i0 == 1)) {
+                // Single query: reuse caller's VisitedTable
                 vt_ptr = external_vt;
                 vt_ptr->advance();
             } else {
+                // Multi-query: each thread creates one VT and reuses
+                // it across all queries assigned to that thread
                 local_vt = std::make_unique<VisitedTable>(
                         index->ntotal, hnsw.use_visited_hashset);
                 vt_ptr = local_vt.get();
@@ -314,6 +318,7 @@ void hnsw_search(
                 ndis += stats.ndis;
                 nhops += stats.nhops;
                 res.end();
+                vt_ptr->advance();
             }
         }
         InterruptCallback::check();
