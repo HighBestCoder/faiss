@@ -764,7 +764,16 @@ int search_from_candidates(
 
         constexpr size_t PREFETCH_DISTANCE = 8;
 
-        int neighbor_ids[64];
+        size_t max_neighbors = end - begin;
+        int neighbor_ids_buf[128];
+        std::vector<int> neighbor_ids_vec;
+        int* neighbor_ids;
+        if (max_neighbors <= 128) {
+            neighbor_ids = neighbor_ids_buf;
+        } else {
+            neighbor_ids_vec.resize(max_neighbors);
+            neighbor_ids = neighbor_ids_vec.data();
+        }
         size_t num_neighbors = 0;
 
         for (size_t j = begin; j < end; j++) {
