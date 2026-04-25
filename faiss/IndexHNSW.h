@@ -125,6 +125,27 @@ struct IndexHNSW : Index {
     virtual void permute_entries(const idx_t* perm);
 
     DistanceComputer* get_distance_computer() const override;
+
+    /// Called by hnsw_add_vertices to set the query vector for a point
+    /// being inserted. Subclasses can override this to support non-standard
+    /// input layouts, such as variable-length multi-vector embeddings.
+    virtual void set_query_for_add(
+            DistanceComputer* dis,
+            const float* x,
+            idx_t pt_id,
+            idx_t n0) const {
+        dis->set_query(x + (pt_id - n0) * d);
+    }
+
+    /// Called by HNSW search paths to set the query vector for one query.
+    /// Subclasses can override this to support non-standard query layouts,
+    /// such as variable-length multi-vector embeddings.
+    virtual void set_query_for_search(
+            DistanceComputer* dis,
+            const float* x,
+            idx_t i) const {
+        dis->set_query(x + i * d);
+    }
 };
 
 /** Flat index topped with with a HNSW structure to access elements

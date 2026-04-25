@@ -21,10 +21,10 @@
 #include <cstdint>
 #include "faiss/Index.h"
 
+#include <faiss/HNSWReorder.h>
 #include <faiss/Index2Layer.h>
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexFlatShared.h>
-#include <faiss/HNSWReorder.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
@@ -155,8 +155,7 @@ void hnsw_add_vertices(
                 size_t counter = 0;
                 const IndexFlatShared* flat_shared_ptr = nullptr;
                 if (!x) {
-                    flat_shared_ptr = dynamic_cast<
-                            const IndexFlatShared*>(
+                    flat_shared_ptr = dynamic_cast<const IndexFlatShared*>(
                             index_hnsw.storage);
                     FAISS_THROW_IF_NOT_MSG(
                             flat_shared_ptr,
@@ -164,19 +163,19 @@ void hnsw_add_vertices(
                             "to be IndexFlatShared");
                 }
 
-                // GCC does not have the LLVM segfault issue with dynamic scheduling.
-                // dynamic,64 balances load for HNSW where later insertions are slower.
+                // GCC does not have the LLVM segfault issue with dynamic
+                // scheduling. dynamic,64 balances load for HNSW where later
+                // insertions are slower.
 #pragma omp for schedule(dynamic, 64)
                 for (int i = i0; i < i1; i++) {
                     storage_idx_t pt_id = order[i];
                     if (x) {
-                        dis->set_query(x + (pt_id - n0) * d);
+                        index_hnsw.set_query_for_add(dis.get(), x, pt_id, n0);
                     } else {
                         idx_t storage_id =
                                 flat_shared_ptr->storage_id_map[pt_id];
                         dis->set_query(
-                                flat_shared_ptr->store->get_vector(
-                                        storage_id));
+                                flat_shared_ptr->store->get_vector(storage_id));
                     }
 
                     // cannot break
@@ -310,9 +309,10 @@ void hnsw_search(
 #pragma omp for reduction(+ : n1, n2, ndis, nhops) schedule(guided)
             for (idx_t i = i0; i < i1; i++) {
                 res.begin(i);
-                dis->set_query(x + i * index->d);
+                index->set_query_for_search(dis.get(), x, i);
 
-                HNSWStats stats = hnsw.search(*dis, index, res, *vt_ptr, params);
+                HNSWStats stats =
+                        hnsw.search(*dis, index, res, *vt_ptr, params);
                 n1 += stats.n1;
                 n2 += stats.n2;
                 ndis += stats.ndis;
@@ -391,7 +391,8 @@ void IndexHNSW::add(idx_t n, const float* x) {
 
     hnsw_add_vertices(*this, n0, n, x, verbose, hnsw.levels.size() == ntotal);
 
-    // Enable transparent huge pages on vector storage for better TLB performance
+    // Enable transparent huge pages on vector storage for better TLB
+    // performance
     auto* flat = dynamic_cast<IndexFlatCodes*>(storage);
     if (flat) {
         try_enable_hugepages(
@@ -488,7 +489,7 @@ void IndexHNSW::search_level_0(
 #pragma omp for
         for (idx_t i = 0; i < n; i++) {
             res.begin(i);
-            qdis->set_query(x + i * d);
+            set_query_for_search(qdis.get(), x, i);
 
             hnsw.search_level_0(
                     *qdis.get(),
@@ -939,7 +940,7 @@ void IndexHNSW2Level::search(
             for (idx_t i = 0; i < n; i++) {
                 idx_t* idxi = labels + i * k;
                 float* simi = distances + i * k;
-                dis->set_query(x + i * d);
+                set_query_for_search(dis.get(), x, i);
 
                 // mark all inverted list elements as visited
 
@@ -1082,7 +1083,7 @@ void IndexHNSWCagra::search(
         for (idx_t i = 0; i < n; i++) {
             std::unique_ptr<DistanceComputer> dis(
                     storage_distance_computer(this->storage));
-            dis->set_query(x + i * d);
+            set_query_for_search(dis.get(), x, i);
             nearest[i] = -1;
             nearest_d[i] = std::numeric_limits<float>::max();
 
