@@ -172,8 +172,7 @@ void hnsw_add_vertices(
                     if (x) {
                         index_hnsw.set_query_for_add(dis.get(), x, pt_id, n0);
                     } else {
-                        idx_t storage_id =
-                                flat_shared_ptr->storage_id_map[pt_id];
+                        idx_t storage_id = flat_shared_ptr->resolve_id(pt_id);
                         dis->set_query(
                                 flat_shared_ptr->store->get_vector(storage_id));
                     }

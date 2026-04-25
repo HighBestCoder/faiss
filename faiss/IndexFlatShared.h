@@ -21,6 +21,7 @@ struct IndexFlatShared : IndexFlatCodes {
     std::shared_ptr<SharedVectorStore> store;
 
     /// local_id [0, ntotal) -> store slot
+    /// Empty when is_identity_map is true; materialized only for indirection.
     std::vector<idx_t> storage_id_map;
 
     /// per-index deletion bitmap, indexed by store slot
@@ -42,6 +43,9 @@ struct IndexFlatShared : IndexFlatCodes {
             MetricType metric = METRIC_L2);
 
     idx_t resolve_id(idx_t local_id) const {
+        if (is_identity_map) {
+            return local_id;
+        }
         return storage_id_map[local_id];
     }
 
@@ -50,7 +54,7 @@ struct IndexFlatShared : IndexFlatCodes {
     }
 
     void mark_deleted(idx_t local_id) {
-        idx_t store_slot = storage_id_map[local_id];
+        idx_t store_slot = resolve_id(local_id);
         deleted_bitmap[store_slot >> 6] |= (uint64_t(1) << (store_slot & 63));
     }
 

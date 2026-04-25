@@ -91,12 +91,7 @@ struct IndirectFlatL2Dis : FlatCodesDistanceComputer {
         }
     }
 
-    void prefetch_batch_4(
-            idx_t i0,
-            idx_t i1,
-            idx_t i2,
-            idx_t i3,
-            int level) {
+    void prefetch_batch_4(idx_t i0, idx_t i1, idx_t i2, idx_t i3, int level) {
         const float* p0 = b + resolve(i0) * d;
         const float* p1 = b + resolve(i1) * d;
         const float* p2 = b + resolve(i2) * d;
@@ -200,7 +195,8 @@ struct IndirectFlatL2Dis : FlatCodesDistanceComputer {
             float& dis7) final override {
         ndis += 8;
 
-        // DPDK-style software pipeline: resolve + prefetch L2, then L1 deeper lines
+        // DPDK-style software pipeline: resolve + prefetch L2, then L1 deeper
+        // lines
         const float* __restrict y0 = b + resolve(idx0) * d;
         prefetch_L2(y0);
         const float* __restrict y1 = b + resolve(idx1) * d;
@@ -250,7 +246,6 @@ struct IndirectFlatL2Dis : FlatCodesDistanceComputer {
             prefetch_L1(y6 + 3 * CACHE_LINE_FLOATS);
             prefetch_L1(y7 + 3 * CACHE_LINE_FLOATS);
         }
-
 
         fvec_L2sqr_batch_8(
                 q,
@@ -365,8 +360,7 @@ struct IndirectFlatIPDis : FlatCodesDistanceComputer {
     }
 
     float symmetric_dis(idx_t i, idx_t j) final override {
-        return fvec_inner_product(
-                b + resolve(j) * d, b + resolve(i) * d, d);
+        return fvec_inner_product(b + resolve(j) * d, b + resolve(i) * d, d);
     }
 
     static constexpr size_t CACHE_LINE_FLOATS = 16;
@@ -389,12 +383,7 @@ struct IndirectFlatIPDis : FlatCodesDistanceComputer {
         }
     }
 
-    void prefetch_batch_4(
-            idx_t i0,
-            idx_t i1,
-            idx_t i2,
-            idx_t i3,
-            int level) {
+    void prefetch_batch_4(idx_t i0, idx_t i1, idx_t i2, idx_t i3, int level) {
         const float* p0 = b + resolve(i0) * d;
         const float* p1 = b + resolve(i1) * d;
         const float* p2 = b + resolve(i2) * d;
@@ -470,8 +459,7 @@ struct IndirectFlatIPDis : FlatCodesDistanceComputer {
         }
 
         float dp0 = 0, dp1 = 0, dp2 = 0, dp3 = 0;
-        fvec_inner_product_batch_4(
-                q, y0, y1, y2, y3, d, dp0, dp1, dp2, dp3);
+        fvec_inner_product_batch_4(q, y0, y1, y2, y3, d, dp0, dp1, dp2, dp3);
         dis0 = dp0;
         dis1 = dp1;
         dis2 = dp2;
@@ -497,7 +485,8 @@ struct IndirectFlatIPDis : FlatCodesDistanceComputer {
             float& dis7) final override {
         ndis += 8;
 
-        // DPDK-style software pipeline: resolve + prefetch L2, then L1 deeper lines
+        // DPDK-style software pipeline: resolve + prefetch L2, then L1 deeper
+        // lines
         const float* __restrict y0 = b + resolve(idx0) * d;
         prefetch_L2(y0);
         const float* __restrict y1 = b + resolve(idx1) * d;
@@ -581,9 +570,7 @@ IndexFlatShared::IndexFlatShared(
         : IndexFlatCodes(store->code_size, store->d, metric),
           store(std::move(store)) {
     codes = MaybeOwnedVector<uint8_t>::create_view(
-            this->store->codes.data(),
-            this->store->codes.size(),
-            this->store);
+            this->store->codes.data(), this->store->codes.size(), this->store);
 }
 
 IndexFlatShared::IndexFlatShared(
@@ -594,9 +581,7 @@ IndexFlatShared::IndexFlatShared(
         : IndexFlatCodes(store->code_size, store->d, metric),
           store(std::move(store)) {
     codes = MaybeOwnedVector<uint8_t>::create_view(
-            this->store->codes.data(),
-            this->store->codes.size(),
-            this->store);
+            this->store->codes.data(), this->store->codes.size(), this->store);
 
     build_storage_id_map(
             *this->store,
@@ -607,15 +592,14 @@ IndexFlatShared::IndexFlatShared(
     ntotal = storage_id_map.size();
     is_identity_map = false;
 
-    size_t bitmap_words =
-            (this->store->ntotal_store + 63) / 64;
+    size_t bitmap_words = (this->store->ntotal_store + 63) / 64;
     deleted_bitmap.assign(bitmap_words, 0);
 }
 
 size_t IndexFlatShared::count_alive() const {
     size_t count = 0;
     for (size_t i = 0; i < (size_t)ntotal; i++) {
-        idx_t slot = storage_id_map[i];
+        idx_t slot = resolve_id(i);
         if (!is_deleted(slot)) {
             count++;
         }
@@ -629,8 +613,14 @@ void IndexFlatShared::add(idx_t n, const float* x) {
         idx_t slot = store->allocate_slot(x + i * d);
         if (is_identity_map && slot != (idx_t)(ntotal + i)) {
             is_identity_map = false;
+            storage_id_map.reserve(ntotal + n);
+            for (idx_t j = 0; j < ntotal + i; j++) {
+                storage_id_map.push_back(j);
+            }
         }
-        storage_id_map.push_back(slot);
+        if (!is_identity_map) {
+            storage_id_map.push_back(slot);
+        }
     }
     ntotal += n;
 
@@ -645,7 +635,7 @@ void IndexFlatShared::add(idx_t n, const float* x) {
 
 void IndexFlatShared::reconstruct(idx_t key, float* recons) const {
     FAISS_THROW_IF_NOT(key >= 0 && key < ntotal);
-    idx_t slot = storage_id_map[key];
+    idx_t slot = resolve_id(key);
     memcpy(recons, store->get_vector(slot), sizeof(float) * d);
 }
 
@@ -725,16 +715,13 @@ void compact_store(IndexFlatShared& index) {
     // Uses a temporary buffer of n*cs bytes (freed immediately after swap).
     std::vector<uint8_t> compacted(n * cs);
     for (size_t i = 0; i < n; i++) {
-        memcpy(compacted.data() + i * cs,
-               old_base + (size_t)id_map[i] * cs,
-               cs);
+        idx_t slot = index.resolve_id(i);
+        memcpy(compacted.data() + i * cs, old_base + (size_t)slot * cs, cs);
     }
     store.codes = std::move(compacted);
 
-    for (size_t i = 0; i < n; i++) {
-        id_map[i] = i;
-    }
     index.is_identity_map = true;
+    std::vector<idx_t>().swap(id_map);
 
     store.ntotal_store = n;
     store.free_list.clear();
@@ -771,6 +758,24 @@ void build_storage_id_map(
     }
 }
 
+void build_storage_id_map(
+        const IndexFlatShared& old_storage,
+        std::vector<idx_t>& new_storage_id_map) {
+    new_storage_id_map.clear();
+    new_storage_id_map.reserve(old_storage.ntotal);
+
+    for (idx_t i = 0; i < old_storage.ntotal; i++) {
+        idx_t slot = old_storage.resolve_id(i);
+        bool is_del = false;
+        if (!old_storage.deleted_bitmap.empty()) {
+            is_del = (old_storage.deleted_bitmap[slot >> 6] >> (slot & 63)) & 1;
+        }
+        if (!is_del) {
+            new_storage_id_map.push_back(slot);
+        }
+    }
+}
+
 /*************************************************************
  * build_new_index — build a new IndexHNSW from shared store,
  * skipping deleted vectors (zero-copy rebuild).
@@ -788,11 +793,7 @@ IndexHNSW* build_new_index(
             old_shared, "current_index.storage must be IndexFlatShared");
 
     std::vector<idx_t> new_storage_id_map;
-    build_storage_id_map(
-            *store,
-            old_shared->deleted_bitmap,
-            old_shared->storage_id_map,
-            new_storage_id_map);
+    build_storage_id_map(*old_shared, new_storage_id_map);
 
     idx_t n_alive = new_storage_id_map.size();
 
