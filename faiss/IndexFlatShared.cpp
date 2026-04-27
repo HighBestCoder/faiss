@@ -696,10 +696,13 @@ void IndexFlatShared::reset() {
 }
 
 /*************************************************************
- * compact_store — cycle-following in-place permutation to make
+ * compact_store — in-place cycle-following permutation to make
  * store[i] hold local_id i's vector. After this,
  * storage_id_map[i] == i, free_list is cleared,
  * store.ntotal_store == index.ntotal.
+ *
+ * Memory: O(n * sizeof(idx_t)) for the permutation array + one
+ * vector temp buffer, NOT a full copy of all vector data.
  *************************************************************/
 
 void compact_store(IndexFlatShared& index) {
@@ -707,19 +710,94 @@ void compact_store(IndexFlatShared& index) {
     auto& store = *index.store;
     auto& id_map = index.storage_id_map;
     size_t n = index.ntotal;
+    size_t ns = store.ntotal_store;
     size_t cs = store.code_size;
-    const uint8_t* old_base = store.codes.data();
+    uint8_t* base = store.codes.data();
 
-    // id_map[i] maps local_id i to a store slot in [0, ntotal_store).
-    // After compaction: store[i] = local_id i's vector, id_map = identity.
-    // Uses a temporary buffer of n*cs bytes (freed immediately after swap).
-    std::vector<uint8_t> compacted(n * cs);
-    for (size_t i = 0; i < n; i++) {
-        idx_t slot = index.resolve_id(i);
-        memcpy(compacted.data() + i * cs, old_base + (size_t)slot * cs, cs);
+    // Fast path: already compact and identity-mapped.
+    if (index.is_identity_map && ns == n) {
+        store.free_list.clear();
+        size_t bitmap_words = (n + 63) / 64;
+        index.deleted_bitmap.assign(bitmap_words, 0);
+        index.codes = MaybeOwnedVector<uint8_t>::create_view(
+                store.codes.data(), store.codes.size(), index.store);
+        return;
     }
-    store.codes = std::move(compacted);
 
+    // perm[i] = store slot currently holding local_id i's vector data.
+    // Goal: rearrange so store[i] holds local_id i's data, for i in [0,n).
+    //
+    // Memory: n * sizeof(idx_t) for perm (~160MB for 20M) + one vector
+    // tmp buffer (~3KB for 768-dim float32). NOT a full copy (~58GB).
+    std::vector<idx_t> perm(n);
+    for (size_t i = 0; i < n; i++) {
+        perm[i] = index.resolve_id(i);
+    }
+
+    // Phase 1: Eliminate holes. If ns > n, some slots in [0, n) might be
+    // holes (not used by any live local_id). Move live data from slots >= n
+    // into those holes so all live data is in [0, n).
+    if (ns > n) {
+        // is_live[slot] = true if some local_id's data is at this slot.
+        std::vector<bool> is_live(ns, false);
+        for (size_t i = 0; i < n; i++) {
+            is_live[perm[i]] = true;
+        }
+        // reverse_perm[slot] = local_id at that slot, for updating perm.
+        std::vector<idx_t> reverse_perm(ns, -1);
+        for (size_t i = 0; i < n; i++) {
+            reverse_perm[perm[i]] = i;
+        }
+
+        // Scan from both ends: find holes in [0,n) and live slots in [n,ns).
+        size_t hole = 0;
+        size_t tail = ns - 1;
+        while (hole < n && tail >= n) {
+            // Advance hole to next non-live slot in [0, n).
+            while (hole < n && is_live[hole])
+                hole++;
+            // Advance tail to next live slot in [n, ns).
+            while (tail >= n && !is_live[tail])
+                tail--;
+            if (hole < n && tail >= n) {
+                // Move data from slot tail → slot hole.
+                memcpy(base + hole * cs, base + tail * cs, cs);
+                // Update perm for the local_id that was at slot tail.
+                idx_t lid = reverse_perm[tail];
+                perm[lid] = hole;
+                is_live[hole] = true;
+                is_live[tail] = false;
+                hole++;
+                tail--;
+            }
+        }
+    }
+
+    // Phase 2: Now all live data is in slots [0, n). perm is a permutation
+    // of [0, n). Apply in-place cycle-following (same as permute_entries).
+    std::vector<uint8_t> tmp(cs);
+    std::vector<bool> done(n, false);
+
+    for (size_t i = 0; i < n; i++) {
+        if (done[i] || perm[i] == (idx_t)i)
+            continue;
+
+        memcpy(tmp.data(), base + i * cs, cs);
+        size_t j = i;
+        while (true) {
+            idx_t src = perm[j];
+            done[j] = true;
+            if (src == (idx_t)i) {
+                memcpy(base + (size_t)j * cs, tmp.data(), cs);
+                break;
+            }
+            memcpy(base + (size_t)j * cs, base + (size_t)src * cs, cs);
+            j = src;
+        }
+    }
+
+    // Truncate store to remove slots beyond n.
+    store.codes.resize(n * cs);
     index.is_identity_map = true;
     std::vector<idx_t>().swap(id_map);
 
