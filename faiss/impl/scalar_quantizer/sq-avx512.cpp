@@ -421,10 +421,209 @@ struct DistanceComputerByte<Similarity, SIMDLevel::AVX512>
     }
 };
 
+#ifdef COMPILE_SIMD_AVX512_SPR
+// AVX512_SPR: Sapphire Rapids is a superset of AVX512. Until dedicated
+// SPR specializations are written (e.g. AVX512_FP16 native fmadd), reuse
+// the AVX512 implementations by inheritance. This produces distinct
+// QuantizerXxx<SIMDLevel::AVX512_SPR> symbols so sq_select_quantizer
+// /sq_select_distance_computer / sq_select_InvertedListScanner can be
+// instantiated for AVX512_SPR via the same sq-dispatch.h template machinery.
+
+template <>
+struct Codec8bit<SIMDLevel::AVX512_SPR> : Codec8bit<SIMDLevel::AVX512> {};
+
+template <>
+struct Codec4bit<SIMDLevel::AVX512_SPR> : Codec4bit<SIMDLevel::AVX512> {};
+
+template <>
+struct Codec6bit<SIMDLevel::AVX512_SPR> : Codec6bit<SIMDLevel::AVX512> {};
+
+template <class Codec>
+struct QuantizerTemplate<
+        Codec,
+        scalar_quantizer::QuantizerTemplateScaling::UNIFORM,
+        SIMDLevel::AVX512_SPR>
+        : QuantizerTemplate<
+                  Codec,
+                  scalar_quantizer::QuantizerTemplateScaling::UNIFORM,
+                  SIMDLevel::AVX512> {
+    QuantizerTemplate(size_t d, const std::vector<float>& trained)
+            : QuantizerTemplate<
+                      Codec,
+                      scalar_quantizer::QuantizerTemplateScaling::UNIFORM,
+                      SIMDLevel::AVX512>(d, trained) {}
+};
+
+template <class Codec>
+struct QuantizerTemplate<
+        Codec,
+        scalar_quantizer::QuantizerTemplateScaling::NON_UNIFORM,
+        SIMDLevel::AVX512_SPR>
+        : QuantizerTemplate<
+                  Codec,
+                  scalar_quantizer::QuantizerTemplateScaling::NON_UNIFORM,
+                  SIMDLevel::AVX512> {
+    QuantizerTemplate(size_t d, const std::vector<float>& trained)
+            : QuantizerTemplate<
+                      Codec,
+                      scalar_quantizer::QuantizerTemplateScaling::NON_UNIFORM,
+                      SIMDLevel::AVX512>(d, trained) {}
+};
+
+template <>
+struct QuantizerFP16<SIMDLevel::AVX512_SPR>
+        : QuantizerFP16<SIMDLevel::AVX512> {
+    QuantizerFP16(size_t d, const std::vector<float>& trained)
+            : QuantizerFP16<SIMDLevel::AVX512>(d, trained) {}
+};
+
+template <>
+struct QuantizerBF16<SIMDLevel::AVX512_SPR>
+        : QuantizerBF16<SIMDLevel::AVX512> {
+    QuantizerBF16(size_t d, const std::vector<float>& trained)
+            : QuantizerBF16<SIMDLevel::AVX512>(d, trained) {}
+};
+
+template <>
+struct Quantizer8bitDirect<SIMDLevel::AVX512_SPR>
+        : Quantizer8bitDirect<SIMDLevel::AVX512> {
+    Quantizer8bitDirect(size_t d, const std::vector<float>& trained)
+            : Quantizer8bitDirect<SIMDLevel::AVX512>(d, trained) {}
+};
+
+template <>
+struct Quantizer8bitDirectSigned<SIMDLevel::AVX512_SPR>
+        : Quantizer8bitDirectSigned<SIMDLevel::AVX512> {
+    Quantizer8bitDirectSigned(size_t d, const std::vector<float>& trained)
+            : Quantizer8bitDirectSigned<SIMDLevel::AVX512>(d, trained) {}
+};
+
+template <>
+struct SimilarityL2<SIMDLevel::AVX512_SPR> : SimilarityL2<SIMDLevel::AVX512> {
+    static constexpr SIMDLevel simd_level = SIMDLevel::AVX512_SPR;
+    explicit SimilarityL2(const float* y) : SimilarityL2<SIMDLevel::AVX512>(y) {}
+};
+
+template <>
+struct SimilarityIP<SIMDLevel::AVX512_SPR> : SimilarityIP<SIMDLevel::AVX512> {
+    static constexpr SIMDLevel simd_level = SIMDLevel::AVX512_SPR;
+    explicit SimilarityIP(const float* y) : SimilarityIP<SIMDLevel::AVX512>(y) {}
+};
+
+template <class Quantizer, class Similarity>
+struct DCTemplate<Quantizer, Similarity, SIMDLevel::AVX512_SPR>
+        : DCTemplate<Quantizer, Similarity, SIMDLevel::AVX512> {
+    using Sim = Similarity;
+    DCTemplate(size_t d, const std::vector<float>& trained)
+            : DCTemplate<Quantizer, Similarity, SIMDLevel::AVX512>(d, trained) {}
+};
+
+// SPR DistanceComputerByte: uses VNNI int8 (vpdpbusd) for IP and VNNI int16
+// (vpdpwssd) for L2. Both are bit-identical to the AVX512 mullo/sub path
+// because all arithmetic is exact integer.
+//
+// IP for u8 codes: <a,b> = sum a_i*b_i, a_i,b_i in [0,255]. dpbusd takes
+// (u8, s8). Reinterpret b' = (b - 128) as s8; then a*b' = a*b - 128*a.
+// Correction: dot_unsigned = dot_with_b' + 128 * sum(a). The sum(a) term
+// is computed concurrently with a second dpbusd against an all-ones s8.
+//
+// L2: zero-extend each 32 u8 to 32 u16, take signed diff (range -255..255
+// fits i16), feed dpwssd(acc, diff, diff) → 32 i16 pair-products into
+// 16 i32 lanes per iteration.
+//
+// Dispatcher guarantees d % 32 == 0 (sq-dispatch.h QT_8bit_direct guard);
+// IP main loop steps 64, with a single 32-byte mask-load tail.
+template <class Similarity>
+struct DistanceComputerByte<Similarity, SIMDLevel::AVX512_SPR>
+        : SQDistanceComputer {
+    using Sim = Similarity;
+
+    int d;
+    std::vector<uint8_t> tmp;
+
+    DistanceComputerByte(int d, const std::vector<float>&) : d(d), tmp(d) {}
+
+    int compute_code_distance(const uint8_t* code1, const uint8_t* code2)
+            const {
+        if constexpr (Sim::metric_type == METRIC_INNER_PRODUCT) {
+            __m512i acc = _mm512_setzero_si512();
+            __m512i sum_c1 = _mm512_setzero_si512();
+            const __m512i sign_flip = _mm512_set1_epi8((char)0x80);
+            const __m512i ones = _mm512_set1_epi8(1);
+            int i = 0;
+            for (; i + 64 <= d; i += 64) {
+                __m512i c1 = _mm512_loadu_si512(
+                        reinterpret_cast<const __m512i*>(code1 + i));
+                __m512i c2 = _mm512_loadu_si512(
+                        reinterpret_cast<const __m512i*>(code2 + i));
+                __m512i c2s = _mm512_xor_si512(c2, sign_flip);
+                acc = _mm512_dpbusd_epi32(acc, c1, c2s);
+                sum_c1 = _mm512_dpbusd_epi32(sum_c1, c1, ones);
+            }
+            // 32-byte tail (d % 32 == 0 → tail is 0 or 32 bytes).
+            if (i < d) {
+                const __mmask64 m = (__mmask64{1} << 32) - 1;
+                __m512i c1 = _mm512_maskz_loadu_epi8(m, code1 + i);
+                __m512i c2 = _mm512_maskz_loadu_epi8(m, code2 + i);
+                __m512i c2s = _mm512_xor_si512(c2, sign_flip);
+                acc = _mm512_dpbusd_epi32(acc, c1, c2s);
+                sum_c1 = _mm512_dpbusd_epi32(sum_c1, c1, ones);
+            }
+            int dot = _mm512_reduce_add_epi32(acc);
+            int sc1 = _mm512_reduce_add_epi32(sum_c1);
+            return dot + 128 * sc1;
+        } else {
+            // L2 via VNNI int16 dpwssd.
+            __m512i acc = _mm512_setzero_si512();
+            int i = 0;
+            for (; i + 32 <= d; i += 32) {
+                __m256i c1_8 = _mm256_loadu_si256(
+                        reinterpret_cast<const __m256i*>(code1 + i));
+                __m256i c2_8 = _mm256_loadu_si256(
+                        reinterpret_cast<const __m256i*>(code2 + i));
+                __m512i c1_16 = _mm512_cvtepu8_epi16(c1_8);
+                __m512i c2_16 = _mm512_cvtepu8_epi16(c2_8);
+                __m512i diff = _mm512_sub_epi16(c1_16, c2_16);
+                acc = _mm512_dpwssd_epi32(acc, diff, diff);
+            }
+            return _mm512_reduce_add_epi32(acc);
+        }
+    }
+
+    void set_query(const float* x) final {
+        for (int i = 0; i < d; i++) {
+            tmp[i] = int(x[i]);
+        }
+    }
+
+    int compute_distance(const float* x, const uint8_t* code) {
+        set_query(x);
+        return compute_code_distance(tmp.data(), code);
+    }
+
+    float symmetric_dis(idx_t i, idx_t j) override {
+        return compute_code_distance(
+                codes + i * code_size, codes + j * code_size);
+    }
+
+    float query_to_code(const uint8_t* code) const final {
+        return compute_code_distance(tmp.data(), code);
+    }
+};
+
+#endif // COMPILE_SIMD_AVX512_SPR
+
 } // namespace scalar_quantizer
 } // namespace faiss
 
 #define THE_LEVEL_TO_DISPATCH SIMDLevel::AVX512
 #include <faiss/impl/scalar_quantizer/sq-dispatch.h>
+#undef THE_LEVEL_TO_DISPATCH
+
+#ifdef COMPILE_SIMD_AVX512_SPR
+#define THE_LEVEL_TO_DISPATCH SIMDLevel::AVX512_SPR
+#include <faiss/impl/scalar_quantizer/sq-dispatch.h>
+#undef THE_LEVEL_TO_DISPATCH
+#endif // COMPILE_SIMD_AVX512_SPR
 
 #endif // COMPILE_SIMD_AVX512

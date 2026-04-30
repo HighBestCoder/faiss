@@ -80,6 +80,36 @@ void fp16vec_L2sqr_batch_4(
         float& dis3);
 
 /*********************************************************
+ * FP16 native-precision distance computations (research / SPR only)
+ *
+ * These variants use AVX-512_FP16 (Sapphire Rapids+) with a __m512h
+ * accumulator and _mm512_fmadd_ph: 32 fp16 lanes per FMA, ~2x the
+ * throughput of the FP32-accumulator path on supported hardware.
+ *
+ * RECALL RISK: accumulator stays in fp16 throughout the inner loop, so
+ * partial sums saturate at ±65504 and rounding error accumulates faster
+ * than the FP32 path. For high-d vectors or vectors with magnitude
+ * variation these can produce visibly different distances vs the
+ * mixed-precision path. Always A/B against fp16vec_inner_product()
+ * before using in production.
+ *
+ * On non-SPR builds these forward to the standard FP32-accumulator
+ * implementations (so callers can link unconditionally).
+ *********************************************************/
+
+/// Inner product with native fp16 accumulator (SPR / AVX-512_FP16)
+float fp16vec_inner_product_native(
+        const uint16_t* x,
+        const uint16_t* y,
+        size_t d);
+
+/// Squared L2 distance with native fp16 accumulator (SPR / AVX-512_FP16)
+float fp16vec_L2sqr_native(const uint16_t* x, const uint16_t* y, size_t d);
+
+/// Squared norm with native fp16 accumulator (SPR / AVX-512_FP16)
+float fp16vec_norm_L2sqr_native(const uint16_t* x, size_t d);
+
+/*********************************************************
  * BF16 distance computations
  * Vectors stored as bfloat16 (upper 16 bits of FP32)
  *********************************************************/

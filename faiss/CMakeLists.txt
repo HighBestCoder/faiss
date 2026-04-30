@@ -400,7 +400,7 @@ else()
   add_compile_options(/bigobj)
 endif()
 target_sources(faiss_avx512_spr PRIVATE ${FAISS_SIMD_AVX2_SRC} ${FAISS_SIMD_AVX512_SRC})
-target_compile_definitions(faiss_avx512_spr PRIVATE COMPILE_SIMD_AVX2 COMPILE_SIMD_AVX512)
+target_compile_definitions(faiss_avx512_spr PRIVATE COMPILE_SIMD_AVX2 COMPILE_SIMD_AVX512 COMPILE_SIMD_AVX512_SPR)
 
 add_library(faiss_sve ${FAISS_SRC})
 if(NOT FAISS_OPT_LEVEL STREQUAL "sve")
@@ -442,7 +442,7 @@ if(FAISS_OPT_LEVEL STREQUAL "dd")
     target_compile_definitions(faiss PRIVATE FAISS_ENABLE_DD)
     # Architecture-specific SIMD definitions for Dynamic Dispatch
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "(x86_64|amd64|AMD64)")
-      target_compile_definitions(faiss PRIVATE COMPILE_SIMD_AVX2 COMPILE_SIMD_AVX512)
+      target_compile_definitions(faiss PRIVATE COMPILE_SIMD_AVX2 COMPILE_SIMD_AVX512 COMPILE_SIMD_AVX512_SPR)
       # Baseline flags for common files (prevents auto-vectorization)
       target_compile_options(faiss PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:-mpopcnt -msse4 -mno-avx -mno-avx2>)
