@@ -383,6 +383,116 @@ struct DCTemplate<Quantizer, Similarity, SIMDLevel::AVX2> : SQDistanceComputer {
     float query_to_code(const uint8_t* code) const final {
         return compute_distance(q, code);
     }
+
+    // Optimization: parallel multi-vector distance with independent
+    // accumulators. See the AVX-512 sibling in sq-avx512.cpp for the full
+    // rationale; the short version is that the default DistanceComputer
+    // distances_batch_{4,8} loop has only one dependency chain per code, so
+    // FMA latency dominates. With N independent accumulators and a single
+    // shared loop over the dimension, the FMAs from different codes overlap
+    // in the pipeline, and we approach 1 FMA/cycle.
+    void distances_batch_4(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3) override {
+        const uint8_t* c0 = codes + idx0 * code_size;
+        const uint8_t* c1 = codes + idx1 * code_size;
+        const uint8_t* c2 = codes + idx2 * code_size;
+        const uint8_t* c3 = codes + idx3 * code_size;
+
+        Similarity sim0(q), sim1(q), sim2(q), sim3(q);
+        sim0.begin_8();
+        sim1.begin_8();
+        sim2.begin_8();
+        sim3.begin_8();
+
+        for (size_t i = 0; i < quant.d; i += 8) {
+            int ii = static_cast<int>(i);
+            simd8float32 v0 = quant.reconstruct_8_components(c0, ii);
+            simd8float32 v1 = quant.reconstruct_8_components(c1, ii);
+            simd8float32 v2 = quant.reconstruct_8_components(c2, ii);
+            simd8float32 v3 = quant.reconstruct_8_components(c3, ii);
+            sim0.add_8_components(v0);
+            sim1.add_8_components(v1);
+            sim2.add_8_components(v2);
+            sim3.add_8_components(v3);
+        }
+        dis0 = sim0.result_8();
+        dis1 = sim1.result_8();
+        dis2 = sim2.result_8();
+        dis3 = sim3.result_8();
+    }
+
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) override {
+        const uint8_t* c0 = codes + idx0 * code_size;
+        const uint8_t* c1 = codes + idx1 * code_size;
+        const uint8_t* c2 = codes + idx2 * code_size;
+        const uint8_t* c3 = codes + idx3 * code_size;
+        const uint8_t* c4 = codes + idx4 * code_size;
+        const uint8_t* c5 = codes + idx5 * code_size;
+        const uint8_t* c6 = codes + idx6 * code_size;
+        const uint8_t* c7 = codes + idx7 * code_size;
+
+        Similarity s0(q), s1(q), s2(q), s3(q);
+        Similarity s4(q), s5(q), s6(q), s7(q);
+        s0.begin_8();
+        s1.begin_8();
+        s2.begin_8();
+        s3.begin_8();
+        s4.begin_8();
+        s5.begin_8();
+        s6.begin_8();
+        s7.begin_8();
+
+        for (size_t i = 0; i < quant.d; i += 8) {
+            int ii = static_cast<int>(i);
+            simd8float32 v0 = quant.reconstruct_8_components(c0, ii);
+            simd8float32 v1 = quant.reconstruct_8_components(c1, ii);
+            simd8float32 v2 = quant.reconstruct_8_components(c2, ii);
+            simd8float32 v3 = quant.reconstruct_8_components(c3, ii);
+            simd8float32 v4 = quant.reconstruct_8_components(c4, ii);
+            simd8float32 v5 = quant.reconstruct_8_components(c5, ii);
+            simd8float32 v6 = quant.reconstruct_8_components(c6, ii);
+            simd8float32 v7 = quant.reconstruct_8_components(c7, ii);
+            s0.add_8_components(v0);
+            s1.add_8_components(v1);
+            s2.add_8_components(v2);
+            s3.add_8_components(v3);
+            s4.add_8_components(v4);
+            s5.add_8_components(v5);
+            s6.add_8_components(v6);
+            s7.add_8_components(v7);
+        }
+        dis0 = s0.result_8();
+        dis1 = s1.result_8();
+        dis2 = s2.result_8();
+        dis3 = s3.result_8();
+        dis4 = s4.result_8();
+        dis5 = s5.result_8();
+        dis6 = s6.result_8();
+        dis7 = s7.result_8();
+    }
 };
 
 template <class Similarity>

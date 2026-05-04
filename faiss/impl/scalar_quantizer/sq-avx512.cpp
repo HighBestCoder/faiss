@@ -364,6 +364,120 @@ struct DCTemplate<Quantizer, Similarity, SIMDLevel::AVX512>
     float query_to_code(const uint8_t* code) const final {
         return compute_distance(q, code);
     }
+
+    // Optimization: parallel multi-vector distance with independent
+    // accumulators. The default DistanceComputer::distances_batch_{4,8}
+    // implementations call operator() N times sequentially; each call has only
+    // a single dependency chain on its accu16 register, so the FMA pipeline
+    // (depth ~4-5 cycles on Ice Lake) is fully exposed and IPC ~ 0.2.
+    //
+    // By unrolling N codes against the same query in a single loop with N
+    // independent accumulators, the FMAs from different codes can be issued
+    // back-to-back, hiding the FMA latency and reaching ~1 FMA/cycle. This is
+    // the same trick already used by fvec_inner_product_batch_8 in
+    // distances_avx512.cpp for IndexFlat; we replicate it here for the
+    // ScalarQuantizer DistanceComputer (SQfp16 etc.) which is the HNSW hot
+    // path for SQ-quantized indexes.
+    void distances_batch_4(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3) override {
+        const uint8_t* c0 = codes + idx0 * code_size;
+        const uint8_t* c1 = codes + idx1 * code_size;
+        const uint8_t* c2 = codes + idx2 * code_size;
+        const uint8_t* c3 = codes + idx3 * code_size;
+
+        Similarity sim0(q), sim1(q), sim2(q), sim3(q);
+        sim0.begin_16();
+        sim1.begin_16();
+        sim2.begin_16();
+        sim3.begin_16();
+
+        for (size_t i = 0; i < quant.d; i += 16) {
+            simd16float32 v0 = quant.reconstruct_16_components(c0, i);
+            simd16float32 v1 = quant.reconstruct_16_components(c1, i);
+            simd16float32 v2 = quant.reconstruct_16_components(c2, i);
+            simd16float32 v3 = quant.reconstruct_16_components(c3, i);
+            sim0.add_16_components(v0);
+            sim1.add_16_components(v1);
+            sim2.add_16_components(v2);
+            sim3.add_16_components(v3);
+        }
+        dis0 = sim0.result_16();
+        dis1 = sim1.result_16();
+        dis2 = sim2.result_16();
+        dis3 = sim3.result_16();
+    }
+
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) override {
+        const uint8_t* c0 = codes + idx0 * code_size;
+        const uint8_t* c1 = codes + idx1 * code_size;
+        const uint8_t* c2 = codes + idx2 * code_size;
+        const uint8_t* c3 = codes + idx3 * code_size;
+        const uint8_t* c4 = codes + idx4 * code_size;
+        const uint8_t* c5 = codes + idx5 * code_size;
+        const uint8_t* c6 = codes + idx6 * code_size;
+        const uint8_t* c7 = codes + idx7 * code_size;
+
+        Similarity s0(q), s1(q), s2(q), s3(q);
+        Similarity s4(q), s5(q), s6(q), s7(q);
+        s0.begin_16();
+        s1.begin_16();
+        s2.begin_16();
+        s3.begin_16();
+        s4.begin_16();
+        s5.begin_16();
+        s6.begin_16();
+        s7.begin_16();
+
+        for (size_t i = 0; i < quant.d; i += 16) {
+            simd16float32 v0 = quant.reconstruct_16_components(c0, i);
+            simd16float32 v1 = quant.reconstruct_16_components(c1, i);
+            simd16float32 v2 = quant.reconstruct_16_components(c2, i);
+            simd16float32 v3 = quant.reconstruct_16_components(c3, i);
+            simd16float32 v4 = quant.reconstruct_16_components(c4, i);
+            simd16float32 v5 = quant.reconstruct_16_components(c5, i);
+            simd16float32 v6 = quant.reconstruct_16_components(c6, i);
+            simd16float32 v7 = quant.reconstruct_16_components(c7, i);
+            s0.add_16_components(v0);
+            s1.add_16_components(v1);
+            s2.add_16_components(v2);
+            s3.add_16_components(v3);
+            s4.add_16_components(v4);
+            s5.add_16_components(v5);
+            s6.add_16_components(v6);
+            s7.add_16_components(v7);
+        }
+        dis0 = s0.result_16();
+        dis1 = s1.result_16();
+        dis2 = s2.result_16();
+        dis3 = s3.result_16();
+        dis4 = s4.result_16();
+        dis5 = s5.result_16();
+        dis6 = s6.result_16();
+        dis7 = s7.result_16();
+    }
 };
 
 template <class Similarity>
