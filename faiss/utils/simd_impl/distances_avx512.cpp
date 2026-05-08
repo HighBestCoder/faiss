@@ -1258,4 +1258,246 @@ void fvec_L2sqr_batch_8<SIMDLevel::AVX512>(
 }
 FAISS_PRAGMA_IMPRECISE_FUNCTION_END
 
+#ifdef COMPILE_SIMD_AVX512_SPR
+// =============================================================================
+// AVX512_SPR: Sapphire Rapids is a superset of AVX512. Until dedicated SPR
+// kernels are written (e.g. AVX512_FP16 fmadd, AMX), reuse the AVX512
+// implementations defined above. Forwarders give the SPR DSO definitions for
+// every fvec_* SIMDLevel::AVX512_SPR symbol referenced through the
+// with_simd_level / DISPATCH_SIMDLevel machinery in static-SPR builds.
+//
+// Symbols emitted here mirror the upstream pattern in pq_code_distance-avx512
+// .cpp and sq-avx512.cpp.
+// =============================================================================
+
+template <>
+float fvec_L2sqr<SIMDLevel::AVX512_SPR>(
+        const float* x,
+        const float* y,
+        size_t d) {
+    return fvec_L2sqr<SIMDLevel::AVX512>(x, y, d);
+}
+
+template <>
+float fvec_inner_product<SIMDLevel::AVX512_SPR>(
+        const float* x,
+        const float* y,
+        size_t d) {
+    return fvec_inner_product<SIMDLevel::AVX512>(x, y, d);
+}
+
+template <>
+float fvec_L1<SIMDLevel::AVX512_SPR>(
+        const float* x,
+        const float* y,
+        size_t d) {
+    return fvec_L1<SIMDLevel::AVX512>(x, y, d);
+}
+
+template <>
+float fvec_Linf<SIMDLevel::AVX512_SPR>(
+        const float* x,
+        const float* y,
+        size_t d) {
+    return fvec_Linf<SIMDLevel::AVX512>(x, y, d);
+}
+
+template <>
+float fvec_norm_L2sqr<SIMDLevel::AVX512_SPR>(const float* x, size_t d) {
+    return fvec_norm_L2sqr<SIMDLevel::AVX512>(x, d);
+}
+
+template <>
+void fvec_inner_product_batch_4<SIMDLevel::AVX512_SPR>(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3) {
+    fvec_inner_product_batch_4<SIMDLevel::AVX512>(
+            x, y0, y1, y2, y3, d, dis0, dis1, dis2, dis3);
+}
+
+template <>
+void fvec_L2sqr_batch_4<SIMDLevel::AVX512_SPR>(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3) {
+    fvec_L2sqr_batch_4<SIMDLevel::AVX512>(
+            x, y0, y1, y2, y3, d, dis0, dis1, dis2, dis3);
+}
+
+template <>
+void fvec_inner_product_batch_8<SIMDLevel::AVX512_SPR>(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const float* y4,
+        const float* y5,
+        const float* y6,
+        const float* y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    fvec_inner_product_batch_8<SIMDLevel::AVX512>(
+            x,
+            y0,
+            y1,
+            y2,
+            y3,
+            y4,
+            y5,
+            y6,
+            y7,
+            d,
+            dis0,
+            dis1,
+            dis2,
+            dis3,
+            dis4,
+            dis5,
+            dis6,
+            dis7);
+}
+
+template <>
+void fvec_L2sqr_batch_8<SIMDLevel::AVX512_SPR>(
+        const float* x,
+        const float* y0,
+        const float* y1,
+        const float* y2,
+        const float* y3,
+        const float* y4,
+        const float* y5,
+        const float* y6,
+        const float* y7,
+        const size_t d,
+        float& dis0,
+        float& dis1,
+        float& dis2,
+        float& dis3,
+        float& dis4,
+        float& dis5,
+        float& dis6,
+        float& dis7) {
+    fvec_L2sqr_batch_8<SIMDLevel::AVX512>(
+            x,
+            y0,
+            y1,
+            y2,
+            y3,
+            y4,
+            y5,
+            y6,
+            y7,
+            d,
+            dis0,
+            dis1,
+            dis2,
+            dis3,
+            dis4,
+            dis5,
+            dis6,
+            dis7);
+}
+
+template <>
+void fvec_inner_products_ny<SIMDLevel::AVX512_SPR>(
+        float* ip,
+        const float* x,
+        const float* y,
+        size_t d,
+        size_t ny) {
+    fvec_inner_products_ny<SIMDLevel::AVX512>(ip, x, y, d, ny);
+}
+
+template <>
+void fvec_L2sqr_ny<SIMDLevel::AVX512_SPR>(
+        float* dis,
+        const float* x,
+        const float* y,
+        size_t d,
+        size_t ny) {
+    fvec_L2sqr_ny<SIMDLevel::AVX512>(dis, x, y, d, ny);
+}
+
+template <>
+void fvec_L2sqr_ny_transposed<SIMDLevel::AVX512_SPR>(
+        float* dis,
+        const float* x,
+        const float* y,
+        const float* y_sqlen,
+        size_t d,
+        size_t d_offset,
+        size_t ny) {
+    fvec_L2sqr_ny_transposed<SIMDLevel::AVX512>(
+            dis, x, y, y_sqlen, d, d_offset, ny);
+}
+
+template <>
+size_t fvec_L2sqr_ny_nearest<SIMDLevel::AVX512_SPR>(
+        float* distances_tmp_buffer,
+        const float* x,
+        const float* y,
+        size_t d,
+        size_t ny) {
+    return fvec_L2sqr_ny_nearest<SIMDLevel::AVX512>(
+            distances_tmp_buffer, x, y, d, ny);
+}
+
+template <>
+size_t fvec_L2sqr_ny_nearest_y_transposed<SIMDLevel::AVX512_SPR>(
+        float* distances_tmp_buffer,
+        const float* x,
+        const float* y,
+        const float* y_sqlen,
+        size_t d,
+        size_t d_offset,
+        size_t ny) {
+    return fvec_L2sqr_ny_nearest_y_transposed<SIMDLevel::AVX512>(
+            distances_tmp_buffer, x, y, y_sqlen, d, d_offset, ny);
+}
+
+template <>
+void fvec_madd<SIMDLevel::AVX512_SPR>(
+        size_t n,
+        const float* a,
+        float bf,
+        const float* b,
+        float* c) {
+    fvec_madd<SIMDLevel::AVX512>(n, a, bf, b, c);
+}
+
+template <>
+int fvec_madd_and_argmin<SIMDLevel::AVX512_SPR>(
+        size_t n,
+        const float* a,
+        float bf,
+        const float* b,
+        float* c) {
+    return fvec_madd_and_argmin<SIMDLevel::AVX512>(n, a, bf, b, c);
+}
+
+#endif // COMPILE_SIMD_AVX512_SPR
+
 } // namespace faiss
