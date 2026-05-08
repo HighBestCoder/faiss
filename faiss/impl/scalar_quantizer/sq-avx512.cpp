@@ -735,9 +735,64 @@ struct DistanceComputerByte<Similarity, SIMDLevel::AVX512_SPR>
 #undef THE_LEVEL_TO_DISPATCH
 
 #ifdef COMPILE_SIMD_AVX512_SPR
-#define THE_LEVEL_TO_DISPATCH SIMDLevel::AVX512_SPR
-#include <faiss/impl/scalar_quantizer/sq-dispatch.h>
-#undef THE_LEVEL_TO_DISPATCH
+
+// AVX512_SPR: Sapphire Rapids is a superset of AVX512. Forward to the AVX512
+// implementation until dedicated SPR specializations are written. We can't
+// just `#include sq-dispatch.h` again with THE_LEVEL_TO_DISPATCH=AVX512_SPR
+// because that header has `#pragma once` (and also defines helper templates
+// at namespace scope that must not be redefined). Same forwarder shape as
+// the ARM_SVE block in sq-neon.cpp.
+
+namespace faiss {
+namespace scalar_quantizer {
+
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+ScalarQuantizer::SQuantizer* sq_select_quantizer<SIMDLevel::AVX512_SPR>(
+        QuantizerType qtype,
+        size_t d,
+        const std::vector<float>& trained) {
+    return sq_select_quantizer<SIMDLevel::AVX512>(qtype, d, trained);
+}
+
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+SQDistanceComputer* sq_select_distance_computer<SIMDLevel::AVX512_SPR>(
+        MetricType metric,
+        ScalarQuantizer::QuantizerType qtype,
+        size_t d,
+        const std::vector<float>& trained) {
+    return sq_select_distance_computer<SIMDLevel::AVX512>(
+            metric, qtype, d, trained);
+}
+
+// NOLINTNEXTLINE(facebook-hte-MisplacedTemplateSpecialization)
+template <>
+InvertedListScanner* sq_select_InvertedListScanner<SIMDLevel::AVX512_SPR>(
+        QuantizerType qtype,
+        MetricType mt,
+        size_t d,
+        size_t code_size,
+        const std::vector<float>& trained,
+        const Index* quantizer,
+        bool store_pairs,
+        const IDSelector* sel,
+        bool by_residual) {
+    return sq_select_InvertedListScanner<SIMDLevel::AVX512>(
+            qtype,
+            mt,
+            d,
+            code_size,
+            trained,
+            quantizer,
+            store_pairs,
+            sel,
+            by_residual);
+}
+
+} // namespace scalar_quantizer
+} // namespace faiss
+
 #endif // COMPILE_SIMD_AVX512_SPR
 
 #endif // COMPILE_SIMD_AVX512
