@@ -4,6 +4,7 @@
 #include <faiss/IndexHNSW.h>
 #include <faiss/IndexIVF.h>
 #include <faiss/IndexRefine.h>
+#include <faiss/impl/VisitedTable.h>
 #include <omp.h>
 #include <sys/time.h>
 
@@ -177,6 +178,15 @@ void print_usage(const char* prog) {
 
 int main(int argc, char** argv) {
     if (argc < 2) print_usage(argv[0]);
+
+    // Allow override of v1.14 visited_table_hashset_threshold for A/B test.
+    // Default in libfaiss is 500000. Set FAISS_VT_HASHSET_THRESHOLD to a
+    // large value (e.g., 100000000) to force the vector-backed path.
+    if (const char* s = getenv("FAISS_VT_HASHSET_THRESHOLD")) {
+        faiss::visited_table_hashset_threshold = (size_t)strtoull(s, nullptr, 10);
+        fprintf(stderr, "[patch] visited_table_hashset_threshold = %zu\n",
+                faiss::visited_table_hashset_threshold);
+    }
 
     const char* index_factory_str = argv[1];
 
