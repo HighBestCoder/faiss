@@ -42,6 +42,7 @@ void ScalarQuantizer::set_derived_sizes() {
         case QT_8bit_uniform:
         case QT_8bit_direct:
         case QT_8bit_direct_signed:
+        case QT_8bit_vnni:
             code_size = d;
             bits = 8;
             break;
@@ -76,6 +77,7 @@ void ScalarQuantizer::train(size_t n, const float* x) {
             : qtype == QT_6bit                 ? 6
             : qtype == QT_8bit_uniform         ? 8
             : qtype == QT_8bit                 ? 8
+            : qtype == QT_8bit_vnni            ? 8
                                                : -1;
 
     switch (qtype) {
@@ -91,6 +93,7 @@ void ScalarQuantizer::train(size_t n, const float* x) {
             break;
         case QT_4bit:
         case QT_8bit:
+        case QT_8bit_vnni:
         case QT_6bit:
             train_NonUniform(
                     rangestat,

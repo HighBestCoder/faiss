@@ -32,6 +32,7 @@ namespace {
 
 const std::map<faiss::ScalarQuantizer::QuantizerType, std::string> sq_types = {
         {faiss::ScalarQuantizer::QT_8bit, "SQ8"},
+        {faiss::ScalarQuantizer::QT_8bit_vnni, "SQ8_vnni"},
         {faiss::ScalarQuantizer::QT_4bit, "SQ4"},
         {faiss::ScalarQuantizer::QT_6bit, "SQ6"},
         {faiss::ScalarQuantizer::QT_fp16, "SQfp16"},

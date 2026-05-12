@@ -480,6 +480,383 @@ struct DCTemplate<Quantizer, Similarity, SIMDLevel::AVX512>
     }
 };
 
+/**********************************************************
+ * O18: VNNI int8 IP for SQ8_vnni (QT_8bit_vnni, NON_UNIFORM, IP only)
+ *
+ * Opt-in qtype "SQ8_vnni" — encoding is bit-identical to QT_8bit, but the
+ * AVX512 IP DistanceComputer uses VNNI vpdpbusd with a per-query int8-quantized
+ * query vector instead of the default fp32 reconstruct + fmadd path. Faster
+ * (+30~50% QPS at d=768) but introduces query-side quantization noise that
+ * costs a few points of recall on long-traversal HNSW searches; users opt in
+ * by selecting "SQ8_vnni" in the index factory.
+ *
+ * Math (NON_UNIFORM SQ8, IP):
+ *   y_recon[i] = (c[i] + 0.5) / 255 * vdiff[i] + vmin[i]
+ *   <x, y> = sum_i x[i] * c[i] * vdiff[i]/255           (the dot product)
+ *          + sum_i x[i] * (0.5 * vdiff[i]/255 + vmin[i]) (constant per query)
+ *
+ * In set_query we precompute:
+ *   w[i]  = x[i] * vdiff[i] / 255
+ *   bias  = sum_i x[i] * (0.5 * vdiff[i]/255 + vmin[i])
+ *   s_q   = max_i |w[i]| / 127
+ *   q8[i] = saturate_int8(round(w[i] / s_q))
+ *
+ * Then per code: dot_int = vpdpbusd_reduce(c, q8); return s_q * dot_int + bias.
+ *
+ * Only IP is implemented here. L2 keeps the existing fp32 path (would need
+ * dpwssd on i16 diffs and a different correction; not in this change).
+ **********************************************************/
+struct DCSQ8VNNI_AVX512 : SQDistanceComputer {
+    using Quantizer = QuantizerTemplate<
+            Codec8bit<SIMDLevel::AVX512>,
+            scalar_quantizer::QuantizerTemplateScaling::NON_UNIFORM,
+            SIMDLevel::AVX512>;
+    using Similarity = SimilarityIP<SIMDLevel::AVX512>;
+    using Sim = Similarity;
+
+    Quantizer quant;
+
+    // Per-query precomputed state (mutable so query_to_code can stay const).
+    mutable std::vector<int8_t> q8;
+    mutable float scale_q = 1.0f;
+    mutable float bias_q = 0.0f;
+    mutable bool degenerate = false; // all w[i] == 0 -> dot is 0, return bias
+
+    DCSQ8VNNI_AVX512(size_t d, const std::vector<float>& trained)
+            : quant(d, trained), q8(d) {}
+
+    // ---- fallback fp32 paths for the rare "no query set" / symmetric cases.
+
+    float compute_distance(const float* x, const uint8_t* code) const {
+        Similarity sim(x);
+        sim.begin_16();
+        for (size_t i = 0; i < quant.d; i += 16) {
+            simd16float32 xi = quant.reconstruct_16_components(code, i);
+            sim.add_16_components(xi);
+        }
+        return sim.result_16();
+    }
+
+    float compute_code_distance(const uint8_t* code1, const uint8_t* code2)
+            const {
+        Similarity sim(nullptr);
+        sim.begin_16();
+        for (size_t i = 0; i < quant.d; i += 16) {
+            simd16float32 x1 = quant.reconstruct_16_components(code1, i);
+            simd16float32 x2 = quant.reconstruct_16_components(code2, i);
+            sim.add_16_components_2(x1, x2);
+        }
+        return sim.result_16();
+    }
+
+    float symmetric_dis(idx_t i, idx_t j) override {
+        return compute_code_distance(
+                codes + i * code_size, codes + j * code_size);
+    }
+
+    // ---- query-side int8 quantization.
+
+    void set_query(const float* x) final {
+        q = x;
+        const size_t d = quant.d;
+        const float* vmin = quant.vmin;
+        const float* vdiff = quant.vdiff;
+        const float inv255 = 1.0f / 255.0f;
+
+        // Pass 1: compute w[i] = x[i] * vdiff[i] / 255, bias = sum x[i] *
+        // (0.5*vdiff[i]/255 + vmin[i]), and max|w|. Single fused loop.
+        std::vector<float> w(d);
+        __m512 vmax = _mm512_setzero_ps();
+        __m512 vbias = _mm512_setzero_ps();
+        const __m512 v_inv255 = _mm512_set1_ps(inv255);
+        const __m512 v_half_inv255 = _mm512_set1_ps(0.5f * inv255);
+        for (size_t i = 0; i < d; i += 16) {
+            __m512 vx = _mm512_loadu_ps(x + i);
+            __m512 vd = _mm512_loadu_ps(vdiff + i);
+            __m512 vm = _mm512_loadu_ps(vmin + i);
+            __m512 vw = _mm512_mul_ps(vx, _mm512_mul_ps(vd, v_inv255));
+            _mm512_storeu_ps(w.data() + i, vw);
+            // bias term: x[i] * (0.5 * vdiff[i] / 255 + vmin[i])
+            __m512 vt = _mm512_fmadd_ps(vd, v_half_inv255, vm);
+            vbias = _mm512_fmadd_ps(vx, vt, vbias);
+            // max |w|
+            __m512 vabs = _mm512_abs_ps(vw);
+            vmax = _mm512_max_ps(vmax, vabs);
+        }
+        bias_q = _mm512_reduce_add_ps(vbias);
+        const float maxw = _mm512_reduce_max_ps(vmax);
+
+        if (maxw == 0.0f) {
+            // Degenerate query: all w are zero -> dot is always 0; return bias.
+            scale_q = 0.0f;
+            degenerate = true;
+            std::fill(q8.begin(), q8.end(), int8_t{0});
+            return;
+        }
+        degenerate = false;
+        scale_q = maxw / 127.0f;
+        const float invs = 127.0f / maxw;
+        const __m512 v_invs = _mm512_set1_ps(invs);
+
+        // Pass 2: q8[i] = sat_int8(round(w[i] * invs)).
+        for (size_t i = 0; i < d; i += 16) {
+            __m512 vw = _mm512_loadu_ps(w.data() + i);
+            __m512 vs = _mm512_mul_ps(vw, v_invs);
+            // round to nearest, saturate to int8 via cvtsepi32_epi8.
+            __m512i vi = _mm512_cvtps_epi32(vs); // rounds to nearest (default)
+            __m128i vi8 = _mm512_cvtsepi32_epi8(vi); // saturating pack
+            _mm_storeu_si128(
+                    reinterpret_cast<__m128i*>(q8.data() + i), vi8);
+        }
+    }
+
+    // ---- core: VNNI dot product over the whole code, returns float distance.
+
+    FAISS_ALWAYS_INLINE int vnni_dot(const uint8_t* code) const {
+        const size_t d = quant.d;
+        __m512i acc = _mm512_setzero_si512();
+        size_t i = 0;
+        for (; i + 64 <= d; i += 64) {
+            __m512i c = _mm512_loadu_si512(
+                    reinterpret_cast<const __m512i*>(code + i));
+            __m512i q = _mm512_loadu_si512(
+                    reinterpret_cast<const __m512i*>(q8.data() + i));
+            // vpdpbusd: u8 * s8 -> i32, accumulating 4 products per lane.
+            acc = _mm512_dpbusd_epi32(acc, c, q);
+        }
+        if (i + 32 <= d) {
+            // 32-byte tail (d % 16 == 0 by SIMD requirement, so tail is 0/16/32/48).
+            const __mmask64 m32 = (__mmask64{1} << 32) - 1;
+            __m512i c = _mm512_maskz_loadu_epi8(m32, code + i);
+            __m512i q = _mm512_maskz_loadu_epi8(m32, q8.data() + i);
+            acc = _mm512_dpbusd_epi32(acc, c, q);
+            i += 32;
+        }
+        if (i < d) {
+            // 16-byte tail.
+            const __mmask64 m16 = (__mmask64{1} << 16) - 1;
+            __m512i c = _mm512_maskz_loadu_epi8(m16, code + i);
+            __m512i q = _mm512_maskz_loadu_epi8(m16, q8.data() + i);
+            acc = _mm512_dpbusd_epi32(acc, c, q);
+        }
+        return _mm512_reduce_add_epi32(acc);
+    }
+
+    float query_to_code(const uint8_t* code) const final {
+        if (degenerate) {
+            return bias_q;
+        }
+        int dot = vnni_dot(code);
+        return scale_q * static_cast<float>(dot) + bias_q;
+    }
+
+    // ---- batch APIs: N independent VNNI accumulators sharing the query.
+
+    void distances_batch_4(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3) override {
+        if (degenerate) {
+            dis0 = dis1 = dis2 = dis3 = bias_q;
+            return;
+        }
+        const uint8_t* c0 = codes + idx0 * code_size;
+        const uint8_t* c1 = codes + idx1 * code_size;
+        const uint8_t* c2 = codes + idx2 * code_size;
+        const uint8_t* c3 = codes + idx3 * code_size;
+
+        const size_t d = quant.d;
+        __m512i a0 = _mm512_setzero_si512();
+        __m512i a1 = _mm512_setzero_si512();
+        __m512i a2 = _mm512_setzero_si512();
+        __m512i a3 = _mm512_setzero_si512();
+
+        size_t i = 0;
+        for (; i + 64 <= d; i += 64) {
+            __m512i q = _mm512_loadu_si512(
+                    reinterpret_cast<const __m512i*>(q8.data() + i));
+            a0 = _mm512_dpbusd_epi32(
+                    a0,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c0 + i)),
+                    q);
+            a1 = _mm512_dpbusd_epi32(
+                    a1,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c1 + i)),
+                    q);
+            a2 = _mm512_dpbusd_epi32(
+                    a2,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c2 + i)),
+                    q);
+            a3 = _mm512_dpbusd_epi32(
+                    a3,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c3 + i)),
+                    q);
+        }
+        for (; i < d; i += 16) {
+            const __mmask64 m = (__mmask64{1} << 16) - 1;
+            __m512i q = _mm512_maskz_loadu_epi8(m, q8.data() + i);
+            a0 = _mm512_dpbusd_epi32(
+                    a0, _mm512_maskz_loadu_epi8(m, c0 + i), q);
+            a1 = _mm512_dpbusd_epi32(
+                    a1, _mm512_maskz_loadu_epi8(m, c1 + i), q);
+            a2 = _mm512_dpbusd_epi32(
+                    a2, _mm512_maskz_loadu_epi8(m, c2 + i), q);
+            a3 = _mm512_dpbusd_epi32(
+                    a3, _mm512_maskz_loadu_epi8(m, c3 + i), q);
+        }
+
+        dis0 = scale_q * float(_mm512_reduce_add_epi32(a0)) + bias_q;
+        dis1 = scale_q * float(_mm512_reduce_add_epi32(a1)) + bias_q;
+        dis2 = scale_q * float(_mm512_reduce_add_epi32(a2)) + bias_q;
+        dis3 = scale_q * float(_mm512_reduce_add_epi32(a3)) + bias_q;
+    }
+
+    void distances_batch_8(
+            const idx_t idx0,
+            const idx_t idx1,
+            const idx_t idx2,
+            const idx_t idx3,
+            const idx_t idx4,
+            const idx_t idx5,
+            const idx_t idx6,
+            const idx_t idx7,
+            float& dis0,
+            float& dis1,
+            float& dis2,
+            float& dis3,
+            float& dis4,
+            float& dis5,
+            float& dis6,
+            float& dis7) override {
+        if (degenerate) {
+            dis0 = dis1 = dis2 = dis3 = dis4 = dis5 = dis6 = dis7 = bias_q;
+            return;
+        }
+        const uint8_t* c0 = codes + idx0 * code_size;
+        const uint8_t* c1 = codes + idx1 * code_size;
+        const uint8_t* c2 = codes + idx2 * code_size;
+        const uint8_t* c3 = codes + idx3 * code_size;
+        const uint8_t* c4 = codes + idx4 * code_size;
+        const uint8_t* c5 = codes + idx5 * code_size;
+        const uint8_t* c6 = codes + idx6 * code_size;
+        const uint8_t* c7 = codes + idx7 * code_size;
+
+        const size_t d = quant.d;
+        __m512i a0 = _mm512_setzero_si512();
+        __m512i a1 = _mm512_setzero_si512();
+        __m512i a2 = _mm512_setzero_si512();
+        __m512i a3 = _mm512_setzero_si512();
+        __m512i a4 = _mm512_setzero_si512();
+        __m512i a5 = _mm512_setzero_si512();
+        __m512i a6 = _mm512_setzero_si512();
+        __m512i a7 = _mm512_setzero_si512();
+
+        size_t i = 0;
+        for (; i + 64 <= d; i += 64) {
+            __m512i q = _mm512_loadu_si512(
+                    reinterpret_cast<const __m512i*>(q8.data() + i));
+            a0 = _mm512_dpbusd_epi32(
+                    a0,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c0 + i)),
+                    q);
+            a1 = _mm512_dpbusd_epi32(
+                    a1,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c1 + i)),
+                    q);
+            a2 = _mm512_dpbusd_epi32(
+                    a2,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c2 + i)),
+                    q);
+            a3 = _mm512_dpbusd_epi32(
+                    a3,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c3 + i)),
+                    q);
+            a4 = _mm512_dpbusd_epi32(
+                    a4,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c4 + i)),
+                    q);
+            a5 = _mm512_dpbusd_epi32(
+                    a5,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c5 + i)),
+                    q);
+            a6 = _mm512_dpbusd_epi32(
+                    a6,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c6 + i)),
+                    q);
+            a7 = _mm512_dpbusd_epi32(
+                    a7,
+                    _mm512_loadu_si512(
+                            reinterpret_cast<const __m512i*>(c7 + i)),
+                    q);
+        }
+        for (; i < d; i += 16) {
+            const __mmask64 m = (__mmask64{1} << 16) - 1;
+            __m512i q = _mm512_maskz_loadu_epi8(m, q8.data() + i);
+            a0 = _mm512_dpbusd_epi32(
+                    a0, _mm512_maskz_loadu_epi8(m, c0 + i), q);
+            a1 = _mm512_dpbusd_epi32(
+                    a1, _mm512_maskz_loadu_epi8(m, c1 + i), q);
+            a2 = _mm512_dpbusd_epi32(
+                    a2, _mm512_maskz_loadu_epi8(m, c2 + i), q);
+            a3 = _mm512_dpbusd_epi32(
+                    a3, _mm512_maskz_loadu_epi8(m, c3 + i), q);
+            a4 = _mm512_dpbusd_epi32(
+                    a4, _mm512_maskz_loadu_epi8(m, c4 + i), q);
+            a5 = _mm512_dpbusd_epi32(
+                    a5, _mm512_maskz_loadu_epi8(m, c5 + i), q);
+            a6 = _mm512_dpbusd_epi32(
+                    a6, _mm512_maskz_loadu_epi8(m, c6 + i), q);
+            a7 = _mm512_dpbusd_epi32(
+                    a7, _mm512_maskz_loadu_epi8(m, c7 + i), q);
+        }
+
+        dis0 = scale_q * float(_mm512_reduce_add_epi32(a0)) + bias_q;
+        dis1 = scale_q * float(_mm512_reduce_add_epi32(a1)) + bias_q;
+        dis2 = scale_q * float(_mm512_reduce_add_epi32(a2)) + bias_q;
+        dis3 = scale_q * float(_mm512_reduce_add_epi32(a3)) + bias_q;
+        dis4 = scale_q * float(_mm512_reduce_add_epi32(a4)) + bias_q;
+        dis5 = scale_q * float(_mm512_reduce_add_epi32(a5)) + bias_q;
+        dis6 = scale_q * float(_mm512_reduce_add_epi32(a6)) + bias_q;
+        dis7 = scale_q * float(_mm512_reduce_add_epi32(a7)) + bias_q;
+    }
+};
+
+// Factories declared in sq-dispatch.h. Defined here so the dispatch headers
+// (also included by non-AVX512 TUs) don't need the full DCSQ8VNNI_AVX512
+// definition or the IVFSQScannerIP<...> instantiation.
+SQDistanceComputer* make_DCSQ8VNNI_AVX512(
+        size_t d,
+        const std::vector<float>& trained) {
+    return new DCSQ8VNNI_AVX512(d, trained);
+}
+
+InvertedListScanner* make_IVFSQ8VNNI_AVX512_scanner(
+        int d,
+        const std::vector<float>& trained,
+        size_t code_size,
+        bool store_pairs,
+        const IDSelector* sel,
+        bool by_residual) {
+    return new IVFSQScannerIP<DCSQ8VNNI_AVX512>(
+            d, trained, code_size, store_pairs, sel, by_residual);
+}
+
 template <class Similarity>
 struct DistanceComputerByte<Similarity, SIMDLevel::AVX512>
         : SQDistanceComputer {

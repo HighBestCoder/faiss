@@ -33,6 +33,10 @@ struct ScalarQuantizer : Quantizer {
         QT_bf16,
         QT_8bit_direct_signed, ///< fast indexing of signed int8s ranging from
                                ///< [-128 to 127]
+        QT_8bit_vnni, ///< same encoding as QT_8bit (NON_UNIFORM 8-bit), but
+                      ///< the IP distance computer uses AVX512-VNNI vpdpbusd
+                      ///< with an int8-quantized query (faster, slightly
+                      ///< lower recall)
     };
 
     QuantizerType qtype = QT_8bit;

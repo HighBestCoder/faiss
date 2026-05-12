@@ -149,6 +149,7 @@ int mres_to_int(const std::ssub_match& mr, int deflt = -1, int begin = 0) {
 
 std::map<std::string, ScalarQuantizer::QuantizerType> sq_types = {
         {"SQ8", ScalarQuantizer::QT_8bit},
+        {"SQ8_vnni", ScalarQuantizer::QT_8bit_vnni},
         {"SQ4", ScalarQuantizer::QT_4bit},
         {"SQ6", ScalarQuantizer::QT_6bit},
         {"SQfp16", ScalarQuantizer::QT_fp16},

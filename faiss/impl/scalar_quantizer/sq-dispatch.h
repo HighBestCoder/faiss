@@ -21,6 +21,24 @@ namespace faiss {
 
 namespace scalar_quantizer {
 
+#ifdef COMPILE_SIMD_AVX512
+// Forward declaration + factory defined in sq-avx512.cpp. We can't `new
+// DCSQ8VNNI_AVX512(...)` directly from this header because it's also
+// included by sq-avx2.cpp / ScalarQuantizer.cpp where the class definition
+// (which uses AVX512 intrinsics) is not visible.
+struct DCSQ8VNNI_AVX512;
+SQDistanceComputer* make_DCSQ8VNNI_AVX512(
+        size_t d,
+        const std::vector<float>& trained);
+InvertedListScanner* make_IVFSQ8VNNI_AVX512_scanner(
+        int d,
+        const std::vector<float>& trained,
+        size_t code_size,
+        bool store_pairs,
+        const IDSelector* sel,
+        bool by_residual);
+#endif
+
 // Define SL as alias for THE_LEVEL_TO_DISPATCH for use in this file
 constexpr SIMDLevel SL = THE_LEVEL_TO_DISPATCH;
 
@@ -53,6 +71,13 @@ ScalarQuantizer::SQuantizer* sq_select_quantizer<THE_LEVEL_TO_DISPATCH>(
     }
     switch (qtype) {
         case ScalarQuantizer::QT_8bit:
+            return new QuantizerTemplate<
+                    Codec8bit<SL>,
+                    QuantizerTemplateScaling::NON_UNIFORM,
+                    SL>(d, trained);
+        case ScalarQuantizer::QT_8bit_vnni:
+            // SQ8_vnni: same encoder/decoder as QT_8bit (encoding identical);
+            // only the IP DistanceComputer differs.
             return new QuantizerTemplate<
                     Codec8bit<SL>,
                     QuantizerTemplateScaling::NON_UNIFORM,
@@ -132,6 +157,28 @@ SQDistanceComputer* select_distance_computer_body(
                             SL2>,
                     Sim,
                     SL2>(d, trained);
+
+        case ScalarQuantizer::QT_8bit_vnni:
+            // SQ8_vnni: opt-in faster IP path using VNNI vpdpbusd with an
+            // int8-quantized query. Only AVX512 + IP has a specialized
+            // implementation; everything else falls back to the same fp32
+            // DCTemplate as QT_8bit, so behavior matches QT_8bit exactly.
+#ifdef COMPILE_SIMD_AVX512
+            if constexpr (
+                    SL2 == SIMDLevel::AVX512 &&
+                    Sim::metric_type == METRIC_INNER_PRODUCT) {
+                return make_DCSQ8VNNI_AVX512(d, trained);
+            } else
+#endif
+            {
+                return new DCTemplate<
+                        QuantizerTemplate<
+                                Codec8bit<SL2>,
+                                QuantizerTemplateScaling::NON_UNIFORM,
+                                SL2>,
+                        Sim,
+                        SL2>(d, trained);
+            }
 
         case ScalarQuantizer::QT_6bit:
             return new DCTemplate<
@@ -267,6 +314,32 @@ InvertedListScanner* sq_select_InvertedListScanner<THE_LEVEL_TO_DISPATCH>(
                                 SL2>,
                         Similarity,
                         SL2>>();
+            case ScalarQuantizer::QT_8bit_vnni:
+                // SQ8_vnni: opt-in. Only AVX512 + IP has the specialized
+                // VNNI scanner; everything else falls back to the same fp32
+                // DCTemplate scanner as QT_8bit.
+#ifdef COMPILE_SIMD_AVX512
+                if constexpr (
+                        SL2 == SIMDLevel::AVX512 &&
+                        Similarity::metric_type == METRIC_INNER_PRODUCT) {
+                    return make_IVFSQ8VNNI_AVX512_scanner(
+                            int(d),
+                            trained,
+                            code_size,
+                            store_pairs,
+                            sel,
+                            by_residual);
+                } else
+#endif
+                {
+                    return scan.template operator()<DCTemplate<
+                            QuantizerTemplate<
+                                    Codec8bit<SL2>,
+                                    QuantizerTemplateScaling::NON_UNIFORM,
+                                    SL2>,
+                            Similarity,
+                            SL2>>();
+                }
             case ScalarQuantizer::QT_4bit:
                 return scan.template operator()<DCTemplate<
                         QuantizerTemplate<
