@@ -7,10 +7,40 @@
 
 #pragma once
 
+#include <cstdlib>
+
 #include <faiss/Index.h>
 #include <faiss/utils/prefetch.h>
 
 namespace faiss {
+
+/// Runtime-tunable prefetch line count for FlatCodesDistanceComputer.
+/// Reads $FAISS_PREFETCH_LINES once at first call; default 0 (disabled).
+///
+/// Rationale: the inner loop of distances_batch_8 over an fp16/fp32 vector is
+/// a pure +64B stride scan that Intel's L1 streaming prefetcher detects within
+/// the first 1-2 cachelines and auto-fetches the rest for free. The faiss
+/// software prefetch_L2() calls add no useful work and compete with demand
+/// misses for the 10 Line-Fill Buffers per core. Measured impact on a 16-thread
+/// sustained workload (M=32, efC/efS=512, k=100, sq_fp16) at two scales:
+///
+///     scale            L=3 (legacy)   L=0 (new default)   delta QPS
+///     cohere 10M         1455 QPS          1613 QPS         +10.9%
+///     msmarco 20M         863 QPS           951 QPS         +10.2%
+///
+/// Set FAISS_PREFETCH_LINES explicitly to restore legacy behavior or to
+/// sweep the parameter (range 0..(code_size/64); 0 disables prefetch).
+inline int faiss_prefetch_lines() {
+    static const int v = [] {
+        const char* e = std::getenv("FAISS_PREFETCH_LINES");
+        if (!e) return 0;
+        int x = std::atoi(e);
+        if (x < 0) x = 0;
+        if (x > 256) x = 256;
+        return x;
+    }();
+    return v;
+}
 
 /***********************************************************
  * The distance computer maintains a current query and computes
@@ -81,7 +111,8 @@ struct DistanceComputer {
 
     /// prefetch vector data for upcoming distance computation.
     /// No-op by default; subclasses with flat codes override this.
-    virtual void prefetch(idx_t /*id*/, int /*lines*/ = 3) {}
+    /// `lines = -1` lets the impl use $FAISS_PREFETCH_LINES (default 0, disabled).
+    virtual void prefetch(idx_t /*id*/, int /*lines*/ = -1) {}
 
     virtual ~DistanceComputer() {}
 };
@@ -159,7 +190,7 @@ struct NegativeDistanceComputer : DistanceComputer {
         return -basedis->symmetric_dis(i, j);
     }
 
-    void prefetch(idx_t id, int lines = 3) override {
+    void prefetch(idx_t id, int lines = -1) override {
         basedis->prefetch(id, lines);
     }
 
@@ -194,13 +225,16 @@ struct FlatCodesDistanceComputer : DistanceComputer {
     }
 
     /// Prefetch vector data for upcoming distance computation.
-    /// Only enabled when code_size >= 1200 bytes (roughly d >= 300 for FP32),
-    /// as for smaller vectors the prefetch overhead exceeds the benefit.
-    void prefetch(idx_t id, int lines = 3) override {
+    /// Only enabled when code_size >= 1200 bytes (roughly d >= 300 for FP32).
+    /// `lines` default of -1 means "use FAISS_PREFETCH_LINES env (default 0,
+    /// disabled — see comment on faiss_prefetch_lines() for measurement data).
+    void prefetch(idx_t id, int lines = -1) override {
         if (code_size >= 1200) {
+            int n_lines = (lines >= 0) ? lines : faiss_prefetch_lines();
+            if (n_lines == 0) return;
             const char* ptr =
                     reinterpret_cast<const char*>(codes + id * code_size);
-            for (int l = 0; l < lines; l++) {
+            for (int l = 0; l < n_lines; l++) {
                 prefetch_L2(ptr + l * 64);
             }
         }
