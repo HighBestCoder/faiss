@@ -357,7 +357,10 @@ if(NOT FAISS_OPT_LEVEL STREQUAL "avx2" AND NOT FAISS_OPT_LEVEL STREQUAL "avx512"
   set_target_properties(faiss_avx2 PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
 if(NOT WIN32)
-  target_compile_options(faiss_avx2 PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mavx2 -mfma -mf16c -mpopcnt>)
+  # x86-64-v3 (psABI): AVX2 + FMA + F16C + BMI1/2 + MOVBE + XSAVE — Haswell ISA.
+  # mtune=skylake: more modern scheduling, friendlier to Skylake/IceLake/Zen2+
+  # than mtune=haswell (which is now ~10 years old).
+  target_compile_options(faiss_avx2 PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-march=x86-64-v3 -mtune=skylake -mpopcnt>)
 else()
   # MSVC enables FMA with /arch:AVX2; no separate flags for F16C, POPCNT
   # Ref. FMA (under /arch:AVX2): https://docs.microsoft.com/en-us/cpp/build/reference/arch-x64
@@ -376,8 +379,12 @@ if(NOT FAISS_OPT_LEVEL STREQUAL "avx512")
 endif()
 if(NOT WIN32)
   # All modern CPUs support F, CD, VL, DQ, BW extensions.
+  # Cascade Lake (2019+): adds AVX512-VNNI on top of Skylake-X AVX-512.
+  # NOTE: This excludes first-gen Skylake-X (2017-2018, no VNNI). Those CPUs
+  # fall back to libfaiss_avx2.so via runtime dispatch.
+  # mtune=icelake-server: tuned for ICX/SPR backend, similar uop scheduling.
   # Ref: https://en.wikipedia.org/wiki/AVX512
-  target_compile_options(faiss_avx512 PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-mavx2 -mfma -mf16c -mavx512f -mavx512cd -mavx512vl -mavx512dq -mavx512bw -mpopcnt>)
+  target_compile_options(faiss_avx512 PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-march=cascadelake -mtune=icelake-server -mpopcnt>)
 else()
   target_compile_options(faiss_avx512 PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/arch:AVX512>)
   # we need bigobj for the swig wrapper
@@ -392,8 +399,9 @@ if(NOT FAISS_OPT_LEVEL STREQUAL "avx512_spr")
 endif()
 if(NOT WIN32)
   # Architecture mode to support AVX512 extensions available since Intel(R) Sapphire Rapids.
+  # SPR has no AVX-512 frequency penalty -> safe to widen autovec to zmm.
   # Ref: https://networkbuilders.intel.com/solutionslibrary/intel-avx-512-fp16-instruction-set-for-intel-xeon-processor-based-products-technology-guide
-  target_compile_options(faiss_avx512_spr PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-march=sapphirerapids -mtune=sapphirerapids>)
+  target_compile_options(faiss_avx512_spr PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-march=sapphirerapids -mtune=sapphirerapids -mprefer-vector-width=512>)
 else()
   target_compile_options(faiss_avx512_spr PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/arch:AVX512>)
   # we need bigobj for the swig wrapper
