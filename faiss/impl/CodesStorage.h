@@ -104,4 +104,8 @@ class InMemoryCodesStorage : public CodesStorage {
     std::vector<uint8_t> buffer_;
 };
 
+struct IndexFlatCodes;
+const IndexFlatCodes* find_codes_storage(const Index* idx);
+IndexFlatCodes* find_codes_storage(Index* idx);
+
 } // namespace faiss

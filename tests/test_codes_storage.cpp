@@ -110,3 +110,21 @@ TEST(IndexFlatCodesStorage, DerivedClassesAcceptStorage) {
     idx.add(1, v.data());
     EXPECT_EQ(s->num_codes(), 1u);
 }
+
+#include <faiss/IndexHNSW.h>
+
+TEST(FindCodesStorage, FlatReturnsSelf) {
+    faiss::IndexFlatL2 idx(4);
+    EXPECT_EQ(faiss::find_codes_storage(&idx), &idx);
+}
+
+TEST(FindCodesStorage, HNSWReturnsInnerStorage) {
+    auto inner = new faiss::IndexFlatL2(8);
+    faiss::IndexHNSW hnsw(inner, 16);
+    auto* fc = faiss::find_codes_storage(&hnsw);
+    EXPECT_EQ(fc, inner);
+}
+
+TEST(FindCodesStorage, NullForUnsupported) {
+    EXPECT_EQ(faiss::find_codes_storage((faiss::Index*)nullptr), nullptr);
+}

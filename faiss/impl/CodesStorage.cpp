@@ -73,3 +73,40 @@ std::optional<CodesView> InMemoryCodesStorage::try_view() const {
 }
 
 } // namespace faiss
+
+#include <faiss/IndexFlatCodes.h>
+#include <faiss/IndexHNSW.h>
+#include <faiss/IndexNSG.h>
+#include <faiss/IndexNNDescent.h>
+#include <faiss/IndexRefine.h>
+#include <faiss/IndexIDMap.h>
+#include <faiss/IndexPreTransform.h>
+
+namespace faiss {
+
+const IndexFlatCodes* find_codes_storage(const Index* idx) {
+    if (idx == nullptr) return nullptr;
+    if (auto* fc = dynamic_cast<const IndexFlatCodes*>(idx)) return fc;
+    if (auto* h = dynamic_cast<const IndexHNSW*>(idx))
+        return find_codes_storage(h->storage);
+    if (auto* h = dynamic_cast<const IndexNSG*>(idx))
+        return find_codes_storage(h->storage);
+    if (auto* h = dynamic_cast<const IndexNNDescent*>(idx))
+        return find_codes_storage(h->storage);
+    if (auto* h = dynamic_cast<const IndexRefine*>(idx)) {
+        if (auto* fc = find_codes_storage(h->refine_index)) return fc;
+        return find_codes_storage(h->base_index);
+    }
+    if (auto* h = dynamic_cast<const IndexIDMap*>(idx))
+        return find_codes_storage(h->index);
+    if (auto* h = dynamic_cast<const IndexPreTransform*>(idx))
+        return find_codes_storage(h->index);
+    return nullptr;
+}
+
+IndexFlatCodes* find_codes_storage(Index* idx) {
+    return const_cast<IndexFlatCodes*>(
+            find_codes_storage(static_cast<const Index*>(idx)));
+}
+
+} // namespace faiss
