@@ -98,6 +98,7 @@ set(FAISS_SRC
   impl/CodePacker.cpp
   impl/CodePackerRaBitQ.cpp
   impl/CodesStorage.cpp
+  impl/MetadataStore.cpp
   impl/IDSelector.cpp
   impl/FaissException.cpp
   impl/HNSW.cpp
@@ -229,6 +230,7 @@ set(FAISS_HEADERS
   impl/CodePacker.h
   impl/CodePackerRaBitQ.h
   impl/CodesStorage.h
+  impl/MetadataStore.h
   impl/IDSelector.h
   impl/DistanceComputer.h
   impl/FaissAssert.h
