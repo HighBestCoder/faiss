@@ -86,3 +86,54 @@ TEST(SegmentedFileStorage, FlushFullThenReload) {
     auto v = s2->try_view();
     EXPECT_EQ(0, std::memcmp(v->data, s->try_view()->data, 640));
 }
+
+namespace {
+uint64_t mtime_ns(const std::string& path) {
+    struct stat st;
+    if (::stat(path.c_str(), &st) != 0) {
+        return 0;
+    }
+#ifdef __linux__
+    return (uint64_t)st.st_mtim.tv_sec * 1000000000ULL + st.st_mtim.tv_nsec;
+#else
+    return (uint64_t)st.st_mtime * 1000000000ULL;
+#endif
+}
+} // namespace
+
+TEST(SegmentedFileStorage, ImmutableSegmentsAcrossFlushes) {
+    auto p = fresh_basepath("immut");
+    faiss::SegmentedFileCodesStorage::Options opts;
+    opts.segment_bytes_target = 256;
+    opts.fsync_files = false;
+
+    auto s = std::make_shared<faiss::SegmentedFileCodesStorage>(p, 16, opts);
+    faiss::IndexFlatL2 idx(4, s);
+
+    std::vector<float> a(20 * 4);
+    for (size_t i = 0; i < a.size(); ++i) {
+        a[i] = float(i);
+    }
+    idx.add(20, a.data());
+    s->flush(&idx);
+
+    std::string seg0 = p + ".codes/seg-00000000.bin";
+    std::string seg1 = p + ".codes/seg-00000001.bin";
+    uint64_t mt0 = mtime_ns(seg0);
+    uint64_t mt1 = mtime_ns(seg1);
+    ASSERT_GT(mt0, 0u);
+    ASSERT_GT(mt1, 0u);
+
+    ::usleep(20000);
+
+    std::vector<float> b(30 * 4);
+    for (size_t i = 0; i < b.size(); ++i) {
+        b[i] = float(1000 + i);
+    }
+    idx.add(30, b.data());
+    s->flush(&idx);
+
+    EXPECT_EQ(mt0, mtime_ns(seg0));
+    EXPECT_EQ(mt1, mtime_ns(seg1));
+    EXPECT_EQ(s->num_committed_segments(), 4u);
+}
