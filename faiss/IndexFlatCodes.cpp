@@ -17,32 +17,97 @@
 
 namespace faiss {
 
-IndexFlatCodes::IndexFlatCodes(size_t code_size, idx_t d, MetricType metric)
-        : Index(d, metric), code_size(code_size) {}
+IndexFlatCodes::IndexFlatCodes(
+        size_t code_size,
+        idx_t d,
+        MetricType metric,
+        std::shared_ptr<CodesStorage> storage_in)
+        : Index(d, metric), code_size(code_size) {
+    if (storage_in) {
+        FAISS_THROW_IF_NOT_FMT(
+                storage_in->code_size() == code_size,
+                "storage code_size %zu != index code_size %zu",
+                storage_in->code_size(),
+                code_size);
+        storage = std::move(storage_in);
+        rebind_codes_();
+        ntotal = static_cast<idx_t>(storage->num_codes());
+    } else if (code_size > 0) {
+        storage = std::make_shared<InMemoryCodesStorage>(code_size);
+        rebind_codes_();
+        ntotal = static_cast<idx_t>(storage->num_codes());
+    }
+    // else: derived class will set code_size later; storage will be
+    // lazily created on first mutator call via ensure_storage_().
+}
 
 IndexFlatCodes::IndexFlatCodes() : code_size(0) {}
+
+void IndexFlatCodes::ensure_storage_() {
+    if (storage) {
+        return;
+    }
+    FAISS_THROW_IF_NOT_MSG(
+            code_size > 0,
+            "IndexFlatCodes: code_size must be set before use");
+    storage = std::make_shared<InMemoryCodesStorage>(code_size);
+    rebind_codes_();
+}
+
+void IndexFlatCodes::set_storage(std::shared_ptr<CodesStorage> s) {
+    FAISS_THROW_IF_NOT(s);
+    FAISS_THROW_IF_NOT_FMT(
+            s->code_size() == code_size,
+            "storage code_size %zu != index code_size %zu",
+            s->code_size(),
+            code_size);
+    storage = std::move(s);
+    rebind_codes_();
+    ntotal = static_cast<idx_t>(storage->num_codes());
+}
+
+void IndexFlatCodes::rebind_codes_() {
+    FAISS_THROW_IF_NOT(storage);
+    FAISS_THROW_IF_NOT_MSG(
+            storage->has_resident_view(),
+            "Form-2 CodesStorage not yet supported by IndexFlatCodes");
+    auto v = storage->try_view();
+    FAISS_THROW_IF_NOT(v.has_value());
+    codes = MaybeOwnedVector<uint8_t>::create_view(
+            const_cast<uint8_t*>(v->data), v->nbytes, storage);
+}
 
 void IndexFlatCodes::add(idx_t n, const float* x) {
     FAISS_THROW_IF_NOT(is_trained);
     if (n == 0) {
         return;
     }
-    codes.resize((ntotal + n) * code_size);
-    sa_encode(n, x, codes.data() + (ntotal * code_size));
+    ensure_storage_();
+    std::vector<uint8_t> staging(n * code_size);
+    sa_encode(n, x, staging.data());
+    storage->append(static_cast<size_t>(n), staging.data());
     ntotal += n;
+    rebind_codes_();
 }
 
 void IndexFlatCodes::add_sa_codes(
         idx_t n,
         const uint8_t* codes_in,
         const idx_t* /* xids */) {
-    codes.resize((ntotal + n) * code_size);
-    memcpy(codes.data() + (ntotal * code_size), codes_in, n * code_size);
+    if (n == 0) {
+        return;
+    }
+    ensure_storage_();
+    storage->append(static_cast<size_t>(n), codes_in);
     ntotal += n;
+    rebind_codes_();
 }
 
 void IndexFlatCodes::reset() {
-    codes.clear();
+    if (storage) {
+        storage->reset();
+        rebind_codes_();
+    }
     ntotal = 0;
 }
 
@@ -51,14 +116,27 @@ size_t IndexFlatCodes::sa_code_size() const {
 }
 
 size_t IndexFlatCodes::remove_ids(const IDSelector& sel) {
+    if (!storage || ntotal == 0) {
+        return 0;
+    }
+    auto* inmem = dynamic_cast<InMemoryCodesStorage*>(storage.get());
+    uint8_t* buf = nullptr;
+    if (inmem) {
+        buf = inmem->mutable_data();
+    } else {
+        auto v = storage->try_view();
+        FAISS_THROW_IF_NOT(v.has_value());
+        buf = const_cast<uint8_t*>(v->data);
+    }
+
     idx_t j = 0;
     for (idx_t i = 0; i < ntotal; i++) {
         if (sel.is_member(i)) {
-            // should be removed
+            // drop
         } else {
             if (i > j) {
-                memmove(&codes[code_size * j],
-                        &codes[code_size * i],
+                memmove(buf + code_size * j,
+                        buf + code_size * i,
                         code_size);
             }
             j++;
@@ -66,8 +144,13 @@ size_t IndexFlatCodes::remove_ids(const IDSelector& sel) {
     }
     size_t nremove = ntotal - j;
     if (nremove > 0) {
+        std::vector<uint8_t> kept(buf, buf + j * code_size);
+        storage->reset();
+        if (j > 0) {
+            storage->append(static_cast<size_t>(j), kept.data());
+        }
         ntotal = j;
-        codes.resize(ntotal * code_size);
+        rebind_codes_();
     }
     return nremove;
 }
@@ -97,11 +180,13 @@ void IndexFlatCodes::merge_from(Index& otherIndex, idx_t add_id) {
     FAISS_THROW_IF_NOT_MSG(add_id == 0, "cannot set ids in FlatCodes index");
     check_compatible_for_merge(otherIndex);
     IndexFlatCodes* other = static_cast<IndexFlatCodes*>(&otherIndex);
-    codes.resize((ntotal + other->ntotal) * code_size);
-    memcpy(codes.data() + (ntotal * code_size),
-           other->codes.data(),
-           other->ntotal * code_size);
-    ntotal += other->ntotal;
+    if (other->ntotal > 0) {
+        ensure_storage_();
+        storage->append(
+                static_cast<size_t>(other->ntotal), other->codes.data());
+        ntotal += other->ntotal;
+        rebind_codes_();
+    }
     other->reset();
 }
 
@@ -110,14 +195,11 @@ CodePacker* IndexFlatCodes::get_CodePacker() const {
 }
 
 void IndexFlatCodes::permute_entries(const idx_t* perm) {
-    MaybeOwnedVector<uint8_t> new_codes(codes.size());
-
-    for (idx_t i = 0; i < ntotal; i++) {
-        memcpy(new_codes.data() + i * code_size,
-               codes.data() + perm[i] * code_size,
-               code_size);
+    if (!storage || ntotal == 0) {
+        return;
     }
-    std::swap(codes, new_codes);
+    storage->permute(perm);
+    rebind_codes_();
 }
 
 namespace {

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <vector>
 
+#include <faiss/IndexFlat.h>
 #include <faiss/impl/CodesStorage.h>
 #include <faiss/impl/FaissException.h>
 
@@ -63,4 +64,39 @@ TEST(CodesStorageBase, FlushThrowsByDefault) {
     faiss::InMemoryCodesStorage s(4);
     EXPECT_FALSE(s.supports_flush());
     EXPECT_THROW(s.flush(nullptr), faiss::FaissException);
+}
+
+TEST(IndexFlatCodesStorage, DefaultStorageIsInMemory) {
+    faiss::IndexFlatL2 idx(8);
+    ASSERT_NE(idx.storage, nullptr);
+    EXPECT_TRUE(idx.storage->has_resident_view());
+    EXPECT_EQ(idx.storage->code_size(), 8u * sizeof(float));
+}
+
+TEST(IndexFlatCodesStorage, AddRoutesThroughStorage) {
+    faiss::IndexFlatL2 idx(4);
+    std::vector<float> v = {1, 2, 3, 4, 5, 6, 7, 8};
+    idx.add(2, v.data());
+    EXPECT_EQ(idx.ntotal, 2);
+    EXPECT_EQ(idx.storage->num_codes(), 2u);
+    auto sv = idx.storage->try_view();
+    EXPECT_EQ(idx.codes.data(), sv->data);
+    EXPECT_EQ(idx.codes.size(), sv->nbytes);
+}
+
+TEST(IndexFlatCodesStorage, SetStorageReplacesAndRebinds) {
+    faiss::IndexFlatL2 idx(4);
+    std::vector<float> v = {1, 2, 3, 4};
+    idx.add(1, v.data());
+
+    auto fresh = std::make_shared<faiss::InMemoryCodesStorage>(
+            4 * sizeof(float));
+    std::vector<float> v2 = {9, 8, 7, 6, 5, 4, 3, 2};
+    fresh->append(2, reinterpret_cast<const uint8_t*>(v2.data()));
+    idx.set_storage(fresh);
+    EXPECT_EQ(idx.storage.get(), fresh.get());
+    EXPECT_EQ(idx.codes.size(), 2u * 4u * sizeof(float));
+    EXPECT_EQ(
+            idx.codes.data(),
+            reinterpret_cast<const uint8_t*>(fresh->try_view()->data));
 }

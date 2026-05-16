@@ -7,9 +7,11 @@
 
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include <faiss/Index.h>
+#include <faiss/impl/CodesStorage.h>
 #include <faiss/impl/DistanceComputer.h>
 #include <faiss/impl/maybe_owned_vector.h>
 
@@ -25,9 +27,18 @@ struct IndexFlatCodes : Index {
     /// encoded dataset, size ntotal * code_size
     MaybeOwnedVector<uint8_t> codes;
 
+    /// Owns the byte buffer. Always non-null after the parameterized
+    /// constructor runs; default is an InMemoryCodesStorage that mirrors the
+    /// legacy in-buffer layout.
+    std::shared_ptr<CodesStorage> storage;
+
     IndexFlatCodes();
 
-    IndexFlatCodes(size_t code_size, idx_t d, MetricType metric = METRIC_L2);
+    IndexFlatCodes(
+            size_t code_size,
+            idx_t d,
+            MetricType metric = METRIC_L2,
+            std::shared_ptr<CodesStorage> storage = nullptr);
 
     /// default add uses sa_encode
     void add(idx_t n, const float* x) override;
@@ -89,6 +100,18 @@ struct IndexFlatCodes : Index {
 
     // permute_entries. perm of size ntotal maps new to old positions
     void permute_entries(const idx_t* perm);
+
+    /// Replace the storage and refresh the `codes` view to match. Used by
+    /// the read path to attach a persistent storage after read_index has
+    /// produced a shell index.
+    void set_storage(std::shared_ptr<CodesStorage> storage);
+
+   protected:
+    /// (Re)bind `codes` to the current storage's view. Form-2 throws.
+    void rebind_codes_();
+    /// Lazily create a default InMemoryCodesStorage if none was supplied
+    /// by the constructor (derived classes commonly delay setting code_size).
+    void ensure_storage_();
 };
 
 } // namespace faiss
