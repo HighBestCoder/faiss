@@ -36,7 +36,7 @@ std::string fresh(const char* name) {
     return p;
 }
 
-[[noreturn]] void child_first_flush(
+void child_first_flush(
         const std::string& path,
         const char* kill_phase) {
     ::setenv("FAISS_APPENDABLE_KILL_AFTER", kill_phase, 1);
@@ -56,20 +56,18 @@ std::string fresh(const char* name) {
     }
     hnsw.add(20, data.data());
     storage->flush(&hnsw);
-    ::_exit(0);
 }
 
 void run_crash_test(const char* phase, bool expect_committed) {
     auto path = fresh(("crash_" + std::string(phase)).c_str());
-    pid_t pid = ::fork();
-    ASSERT_GE(pid, 0);
-    if (pid == 0) {
-        child_first_flush(path, phase);
-    }
-    int status = 0;
-    ::waitpid(pid, &status, 0);
-    ASSERT_TRUE(WIFEXITED(status));
-    EXPECT_EQ(WEXITSTATUS(status), 137);
+    // Use gtest death-test "threadsafe" mode: fork+exec yields a fresh
+    // process with a clean OpenMP runtime (iomp5 corrupts a forked-only
+    // child that touched threads in the parent).
+    ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+    EXPECT_EXIT(
+            child_first_flush(path, phase),
+            ::testing::ExitedWithCode(137),
+            "");
 
     auto storage = std::make_shared<faiss::SegmentedFileCodesStorage>(
             path, 16);
