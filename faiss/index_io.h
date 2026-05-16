@@ -68,6 +68,13 @@ const int IO_FLAG_MMAP = IO_FLAG_SKIP_IVF_DATA | 0x646f0000;
 //   after OnDiskInvertedLists get properly updated.
 const int IO_FLAG_MMAP_IFC = 1 << 9;
 
+/// Skip the per-IndexFlatCodes `codes` byte vector when writing or reading.
+/// The resulting on-disk image (or in-memory Index after read) contains the
+/// full header, graph/codebook, etc., but `codes.size() == 0`. Used by the
+/// CodesStorage path: the byte payload is owned by an external storage
+/// driver and persisted separately.
+const int IO_FLAG_SKIP_CODE_BYTES = 1 << 10;
+
 Index* read_index(const char* fname, int io_flags = 0);
 Index* read_index(FILE* f, int io_flags = 0);
 Index* read_index(IOReader* reader, int io_flags = 0);
