@@ -923,7 +923,7 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
             uint32_t n4 = fourcc("null");
             WRITE1(n4);
         } else {
-            write_index(idxhnsw->storage, f);
+            write_index(idxhnsw->storage, f, io_flags);
         }
     } else if (const IndexNSG* idxnsg = dynamic_cast<const IndexNSG*>(idx)) {
         uint32_t h = dynamic_cast<const IndexNSGFlat*>(idx) ? fourcc("INSf")
@@ -940,7 +940,7 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         WRITE1(idxnsg->nndescent_L);
         WRITE1(idxnsg->nndescent_iter);
         write_NSG(&idxnsg->nsg, f);
-        write_index(idxnsg->storage, f);
+        write_index(idxnsg->storage, f, io_flags);
     } else if (
             const IndexNNDescent* idxnnd =
                     dynamic_cast<const IndexNNDescent*>(idx)) {
@@ -951,7 +951,7 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         WRITE1(h);
         write_index_header(idxnnd, f);
         write_NNDescent(&idxnnd->nndescent, f);
-        write_index(idxnnd->storage, f);
+        write_index(idxnnd->storage, f, io_flags);
     } else if (
             const IndexPQFastScan* idxpqfs =
                     dynamic_cast<const IndexPQFastScan*>(idx)) {

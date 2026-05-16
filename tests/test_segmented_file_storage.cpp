@@ -137,3 +137,77 @@ TEST(SegmentedFileStorage, ImmutableSegmentsAcrossFlushes) {
     EXPECT_EQ(mt1, mtime_ns(seg1));
     EXPECT_EQ(s->num_committed_segments(), 4u);
 }
+
+#include <faiss/IndexHNSW.h>
+#include <faiss/impl/CodesStorage.h>
+
+namespace {
+std::vector<float> rand_floats(size_t n, uint32_t seed) {
+    std::vector<float> v(n);
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> dist(-1.f, 1.f);
+    for (auto& x : v) x = dist(rng);
+    return v;
+}
+
+void compare_search(faiss::Index& a, faiss::Index& b, size_t d) {
+    const size_t nq = 32, k = 10;
+    auto q = rand_floats(nq * d, 99);
+    std::vector<float> da(nq * k), db(nq * k);
+    std::vector<faiss::idx_t> la(nq * k), lb(nq * k);
+    a.search(nq, q.data(), k, da.data(), la.data());
+    b.search(nq, q.data(), k, db.data(), lb.data());
+    for (size_t i = 0; i < nq * k; ++i) {
+        EXPECT_EQ(la[i], lb[i]) << "label mismatch at " << i;
+    }
+}
+} // namespace
+
+TEST(SegmentedFileStorage, HnswFlatTwoBatchFlushReload) {
+    auto p = fresh_basepath("hnsw_flat");
+    const size_t d = 32;
+    const size_t batch = 4000;
+
+    faiss::SegmentedFileCodesStorage::Options opts;
+    opts.segment_bytes_target = 256 * 1024;
+    opts.fsync_files = false;
+
+    auto storage = std::make_shared<faiss::SegmentedFileCodesStorage>(
+            p, d * sizeof(float), opts);
+    auto* inner = new faiss::IndexFlatL2(d, storage);
+    faiss::IndexHNSWFlat hnsw(d, 16);
+    delete hnsw.storage;
+    hnsw.storage = inner;
+    hnsw.own_fields = true;
+    hnsw.hnsw.efConstruction = 40;
+
+    auto first = rand_floats(batch * d, 1);
+    auto second = rand_floats(batch * d, 2);
+
+    hnsw.add(batch, first.data());
+    storage->flush(&hnsw);
+
+    std::string seg0 = p + ".codes/seg-00000000.bin";
+    uint64_t mt_before = mtime_ns(seg0);
+    ASSERT_GT(mt_before, 0u);
+    ::usleep(2000);
+
+    hnsw.add(batch, second.data());
+    storage->flush(&hnsw);
+
+    EXPECT_EQ(mt_before, mtime_ns(seg0))
+            << "seg-00000000.bin was rewritten on incremental flush";
+
+    auto storage2 = std::make_shared<faiss::SegmentedFileCodesStorage>(
+            p, d * sizeof(float), opts);
+    std::unique_ptr<faiss::Index> reloaded(faiss::read_index(
+            (p + ".graph/graph-00000002.bin").c_str(),
+            faiss::IO_FLAG_SKIP_CODE_BYTES));
+    ASSERT_NE(reloaded.get(), nullptr);
+    auto* fc = faiss::find_codes_storage(reloaded.get());
+    ASSERT_NE(fc, nullptr);
+    fc->set_storage(storage2);
+
+    EXPECT_EQ(reloaded->ntotal, hnsw.ntotal);
+    compare_search(hnsw, *reloaded, d);
+}
