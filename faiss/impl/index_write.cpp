@@ -69,6 +69,26 @@
 #include <faiss/IndexBinaryHash.h>
 #include <faiss/IndexBinaryIVF.h>
 
+#define WRITEVECTOR_SKIPPABLE(vec, skip)         \
+    do {                                         \
+        if (skip) {                              \
+            size_t sz = 0;                       \
+            WRITEANDCHECK(&sz, 1);               \
+        } else {                                 \
+            WRITEVECTOR(vec);                    \
+        }                                        \
+    } while (0)
+
+#define WRITEXBVECTOR_SKIPPABLE(vec, skip)       \
+    do {                                         \
+        if (skip) {                              \
+            size_t sz = 0;                       \
+            WRITEANDCHECK(&sz, 1);               \
+        } else {                                 \
+            WRITEXBVECTOR(vec);                  \
+        }                                        \
+    } while (0)
+
 /*************************************************************
  * The I/O format is the content of the class. For objects that are
  * inherited, like Index, a 4-character-code (fourcc) indicates which
@@ -502,7 +522,7 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
                                                                  : "IxFl");
         WRITE1(h);
         write_index_header(idx, f);
-        WRITEXBVECTOR(idxf->codes);
+        WRITEXBVECTOR_SKIPPABLE(idxf->codes, io_flags & IO_FLAG_SKIP_CODE_BYTES);
     } else if (const IndexLSH* idxl = dynamic_cast<const IndexLSH*>(idx)) {
         uint32_t h = fourcc("IxHe");
         WRITE1(h);
@@ -514,13 +534,13 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         int code_size_i = idxl->code_size;
         WRITE1(code_size_i);
         write_VectorTransform(&idxl->rrot, f);
-        WRITEVECTOR(idxl->codes);
+        WRITEVECTOR_SKIPPABLE(idxl->codes, io_flags & IO_FLAG_SKIP_CODE_BYTES);
     } else if (const IndexPQ* idxp = dynamic_cast<const IndexPQ*>(idx)) {
         uint32_t h = fourcc("IxPq");
         WRITE1(h);
         write_index_header(idx, f);
         write_ProductQuantizer(&idxp->pq, f);
-        WRITEVECTOR(idxp->codes);
+        WRITEVECTOR_SKIPPABLE(idxp->codes, io_flags & IO_FLAG_SKIP_CODE_BYTES);
         // search params -- maybe not useful to store?
         WRITE1(idxp->search_type);
         WRITE1(idxp->encode_signs);
@@ -533,7 +553,7 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         write_index_header(idx, f);
         write_ResidualQuantizer(&idxr->rq, f);
         WRITE1(idxr->code_size);
-        WRITEVECTOR(idxr->codes);
+        WRITEVECTOR_SKIPPABLE(idxr->codes, io_flags & IO_FLAG_SKIP_CODE_BYTES);
     } else if (
             auto* idxr_2 =
                     dynamic_cast<const IndexLocalSearchQuantizer*>(idx)) {
@@ -542,7 +562,7 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         write_index_header(idx, f);
         write_LocalSearchQuantizer(&idxr_2->lsq, f);
         WRITE1(idxr_2->code_size);
-        WRITEVECTOR(idxr_2->codes);
+        WRITEVECTOR_SKIPPABLE(idxr_2->codes, io_flags & IO_FLAG_SKIP_CODE_BYTES);
     } else if (
             const IndexProductResidualQuantizer* idxpr =
                     dynamic_cast<const IndexProductResidualQuantizer*>(idx)) {
@@ -551,7 +571,7 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         write_index_header(idx, f);
         write_ProductResidualQuantizer(&idxpr->prq, f);
         WRITE1(idxpr->code_size);
-        WRITEVECTOR(idxpr->codes);
+        WRITEVECTOR_SKIPPABLE(idxpr->codes, io_flags & IO_FLAG_SKIP_CODE_BYTES);
     } else if (
             const IndexProductLocalSearchQuantizer* idxpl =
                     dynamic_cast<const IndexProductLocalSearchQuantizer*>(
@@ -561,7 +581,7 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         write_index_header(idx, f);
         write_ProductLocalSearchQuantizer(&idxpl->plsq, f);
         WRITE1(idxpl->code_size);
-        WRITEVECTOR(idxpl->codes);
+        WRITEVECTOR_SKIPPABLE(idxpl->codes, io_flags & IO_FLAG_SKIP_CODE_BYTES);
     } else if (
             auto* idxaqfs =
                     dynamic_cast<const IndexAdditiveQuantizerFastScan*>(idx)) {
@@ -702,7 +722,7 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         WRITE1(h);
         write_index_header(idx, f);
         write_ScalarQuantizer(&idxs->sq, f);
-        WRITEVECTOR(idxs->codes);
+        WRITEVECTOR_SKIPPABLE(idxs->codes, io_flags & IO_FLAG_SKIP_CODE_BYTES);
     } else if (
             const IndexLattice* idxl_2 =
                     dynamic_cast<const IndexLattice*>(idx)) {

@@ -6,6 +6,7 @@
 set(FAISS_TEST_SRC
   test_binary_flat.cpp
   test_codes_storage.cpp
+  test_skip_code_bytes.cpp
   test_dealloc_invlists.cpp
   test_ivfpq_codec.cpp
   test_ivfpq_indexing.cpp
