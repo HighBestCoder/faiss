@@ -61,3 +61,42 @@ TEST(SkipCodeBytes, PQWriteOmitsCodes) {
             wr_full.data.size() - wr_slim.data.size(),
             idx.codes.size());
 }
+
+TEST(SkipCodeBytes, FlatL2RoundtripSlim) {
+    constexpr size_t d = 8, n = 64;
+    faiss::IndexFlatL2 idx(d);
+    auto data = rand_data(n, d, 3);
+    idx.add(n, data.data());
+
+    faiss::VectorIOWriter wr;
+    faiss::write_index(&idx, &wr, faiss::IO_FLAG_SKIP_CODE_BYTES);
+
+    faiss::VectorIOReader rd;
+    rd.data = wr.data;
+    std::unique_ptr<faiss::Index> loaded(
+            faiss::read_index(&rd, faiss::IO_FLAG_SKIP_CODE_BYTES));
+    auto* lf = dynamic_cast<faiss::IndexFlat*>(loaded.get());
+    ASSERT_NE(lf, nullptr);
+    EXPECT_EQ(lf->ntotal, idx.ntotal);
+    EXPECT_EQ(lf->codes.size(), 0u);
+}
+
+TEST(SkipCodeBytes, PQRoundtripSlim) {
+    constexpr size_t d = 8, n = 256;
+    faiss::IndexPQ idx(d, 4, 4);
+    auto data = rand_data(n, d, 4);
+    idx.train(n, data.data());
+    idx.add(n, data.data());
+
+    faiss::VectorIOWriter wr;
+    faiss::write_index(&idx, &wr, faiss::IO_FLAG_SKIP_CODE_BYTES);
+    faiss::VectorIOReader rd;
+    rd.data = wr.data;
+    std::unique_ptr<faiss::Index> loaded(
+            faiss::read_index(&rd, faiss::IO_FLAG_SKIP_CODE_BYTES));
+    auto* lp = dynamic_cast<faiss::IndexPQ*>(loaded.get());
+    ASSERT_NE(lp, nullptr);
+    EXPECT_EQ(lp->ntotal, idx.ntotal);
+    EXPECT_EQ(lp->codes.size(), 0u);
+    EXPECT_EQ(lp->pq.centroids.size(), idx.pq.centroids.size());
+}

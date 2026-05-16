@@ -10,6 +10,34 @@
 
 #include <faiss/impl/io_macros.h>
 
+#define READVECTOR_SKIPPABLE(vec, skip)              \
+    do {                                             \
+        if (skip) {                                  \
+            size_t sz_unused;                        \
+            READANDCHECK(&sz_unused, 1);             \
+            FAISS_THROW_IF_NOT_MSG(                  \
+                    sz_unused == 0,                  \
+                    "IO_FLAG_SKIP_CODE_BYTES requires a zero-length codes vector"); \
+            (vec).resize(0);                         \
+        } else {                                     \
+            READVECTOR(vec);                         \
+        }                                            \
+    } while (0)
+
+#define READXBVECTOR_SKIPPABLE(vec, skip)            \
+    do {                                             \
+        if (skip) {                                  \
+            size_t sz_unused;                        \
+            READANDCHECK(&sz_unused, 1);             \
+            FAISS_THROW_IF_NOT_MSG(                  \
+                    sz_unused == 0,                  \
+                    "IO_FLAG_SKIP_CODE_BYTES requires a zero-length codes vector"); \
+            (vec).resize(0);                         \
+        } else {                                     \
+            READXBVECTOR(vec);                       \
+        }                                            \
+    } while (0)
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -993,9 +1021,13 @@ std::unique_ptr<Index> read_index_up(IOReader* f, int io_flags) {
         }
         read_index_header(*idxf, f);
         idxf->code_size = idxf->d * sizeof(float);
-        read_xb_vector(idxf->codes, f);
-        FAISS_THROW_IF_NOT(
-                idxf->codes.size() == idxf->ntotal * idxf->code_size);
+        if (io_flags & IO_FLAG_SKIP_CODE_BYTES) {
+            READXBVECTOR_SKIPPABLE(idxf->codes, 1);
+        } else {
+            read_xb_vector(idxf->codes, f);
+            FAISS_THROW_IF_NOT(
+                    idxf->codes.size() == idxf->ntotal * idxf->code_size);
+        }
         idx = std::move(idxf);
     } else if (h == fourcc("IxHE") || h == fourcc("IxHe")) {
         auto idxl = std::make_unique<IndexLSH>();
@@ -1028,6 +1060,7 @@ std::unique_ptr<Index> read_index_up(IOReader* f, int io_flags) {
         FAISS_THROW_IF_NOT(
                 idxl->rrot.d_in == idxl->d && idxl->rrot.d_out == idxl->nbits);
         FAISS_THROW_IF_NOT(
+                (io_flags & IO_FLAG_SKIP_CODE_BYTES) ||
                 idxl->codes.size() == idxl->ntotal * idxl->code_size);
         idx = std::move(idxl);
     } else if (
