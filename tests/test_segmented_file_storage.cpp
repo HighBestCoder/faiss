@@ -211,3 +211,56 @@ TEST(SegmentedFileStorage, HnswFlatTwoBatchFlushReload) {
     EXPECT_EQ(reloaded->ntotal, hnsw.ntotal);
     compare_search(hnsw, *reloaded, d);
 }
+
+#include <faiss/IndexPQ.h>
+
+TEST(SegmentedFileStorage, HnswPqTwoBatchFlushReload) {
+    auto p = fresh_basepath("hnsw_pq");
+    const size_t d = 32;
+    const size_t batch = 4000;
+
+    faiss::SegmentedFileCodesStorage::Options opts;
+    opts.segment_bytes_target = 32 * 1024;
+    opts.fsync_files = false;
+
+    auto storage = std::make_shared<faiss::SegmentedFileCodesStorage>(
+            p, 8, opts);
+    auto* inner = new faiss::IndexPQ(d, 8, 8);
+    inner->set_storage(storage);
+    faiss::IndexHNSWPQ hnsw(d, 8, 16);
+    delete hnsw.storage;
+    hnsw.storage = inner;
+    hnsw.own_fields = true;
+
+    auto first = rand_floats(batch * d, 1);
+    auto second = rand_floats(batch * d, 2);
+
+    inner->train(batch, first.data());
+    inner->pq.compute_sdc_table();
+    hnsw.is_trained = true;
+    hnsw.add(batch, first.data());
+    storage->flush(&hnsw);
+
+    std::string seg0 = p + ".codes/seg-00000000.bin";
+    uint64_t mt_before = mtime_ns(seg0);
+    ASSERT_GT(mt_before, 0u);
+    ::usleep(2000);
+
+    hnsw.add(batch, second.data());
+    storage->flush(&hnsw);
+
+    EXPECT_EQ(mt_before, mtime_ns(seg0));
+
+    auto storage2 = std::make_shared<faiss::SegmentedFileCodesStorage>(
+            p, 8, opts);
+    std::unique_ptr<faiss::Index> reloaded(faiss::read_index(
+            (p + ".graph/graph-00000002.bin").c_str(),
+            faiss::IO_FLAG_SKIP_CODE_BYTES));
+    ASSERT_NE(reloaded.get(), nullptr);
+    auto* fc = faiss::find_codes_storage(reloaded.get());
+    ASSERT_NE(fc, nullptr);
+    fc->set_storage(storage2);
+
+    EXPECT_EQ(reloaded->ntotal, hnsw.ntotal);
+    compare_search(hnsw, *reloaded, d);
+}
