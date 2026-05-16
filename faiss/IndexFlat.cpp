@@ -26,6 +26,12 @@ namespace faiss {
 IndexFlat::IndexFlat(idx_t d, MetricType metric)
         : IndexFlatCodes(sizeof(float) * d, d, metric) {}
 
+IndexFlat::IndexFlat(
+        idx_t d,
+        MetricType metric,
+        std::shared_ptr<CodesStorage> storage)
+        : IndexFlatCodes(sizeof(float) * d, d, metric, std::move(storage)) {}
+
 void IndexFlat::search(
         idx_t n,
         const float* x,

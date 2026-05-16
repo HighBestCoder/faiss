@@ -23,6 +23,8 @@ struct IndexFlat : IndexFlatCodes {
             idx_t d, ///< dimensionality of the input vectors
             MetricType metric = METRIC_L2);
 
+    IndexFlat(idx_t d, MetricType metric, std::shared_ptr<CodesStorage> storage);
+
     void search(
             idx_t n,
             const float* x,
@@ -75,6 +77,8 @@ struct IndexFlat : IndexFlatCodes {
 
 struct IndexFlatIP : IndexFlat {
     explicit IndexFlatIP(idx_t d) : IndexFlat(d, METRIC_INNER_PRODUCT) {}
+    IndexFlatIP(idx_t d, std::shared_ptr<CodesStorage> s)
+            : IndexFlat(d, METRIC_INNER_PRODUCT, std::move(s)) {}
     IndexFlatIP() {}
 };
 
@@ -89,6 +93,8 @@ struct IndexFlatL2 : IndexFlat {
      * @param d dimensionality of the input vectors
      */
     explicit IndexFlatL2(idx_t d) : IndexFlat(d, METRIC_L2) {}
+    IndexFlatL2(idx_t d, std::shared_ptr<CodesStorage> s)
+            : IndexFlat(d, METRIC_L2, std::move(s)) {}
     IndexFlatL2() {}
 
     // override for l2 norms cache.

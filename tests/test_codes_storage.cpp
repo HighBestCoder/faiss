@@ -100,3 +100,13 @@ TEST(IndexFlatCodesStorage, SetStorageReplacesAndRebinds) {
             idx.codes.data(),
             reinterpret_cast<const uint8_t*>(fresh->try_view()->data));
 }
+
+TEST(IndexFlatCodesStorage, DerivedClassesAcceptStorage) {
+    auto s = std::make_shared<faiss::InMemoryCodesStorage>(4 * sizeof(float));
+    faiss::IndexFlatL2 idx(4, s);
+    EXPECT_EQ(idx.storage.get(), s.get());
+
+    std::vector<float> v = {1, 2, 3, 4};
+    idx.add(1, v.data());
+    EXPECT_EQ(s->num_codes(), 1u);
+}
