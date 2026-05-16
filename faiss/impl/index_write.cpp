@@ -26,7 +26,9 @@
 #include <faiss/IndexAdditiveQuantizer.h>
 #include <faiss/IndexAdditiveQuantizerFastScan.h>
 #include <faiss/IndexFlat.h>
+#include <faiss/IndexFlatShared.h>
 #include <faiss/IndexHNSW.h>
+#include <faiss/SharedVectorStore.h>
 #include <faiss/IndexIVF.h>
 #include <faiss/IndexIVFAdditiveQuantizer.h>
 #include <faiss/IndexIVFAdditiveQuantizerFastScan.h>
@@ -468,6 +470,31 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
         WRITE1(idxpan->is_trained);
         WRITEVECTOR(idxpan->codes);
         WRITEVECTOR(idxpan->cum_sums);
+    } else if (
+            const IndexFlatShared* idxfs =
+                    dynamic_cast<const IndexFlatShared*>(idx)) {
+        // VDE shared-storage rollout: IndexFlatShared owns codes via a
+        // shared SharedVectorStore.  We serialize the store's full slot
+        // table (ntotal_store + codes) followed by the index's view
+        // (ntotal + storage_id_map + deleted_bitmap + is_identity_map).
+        // On read we materialize a fresh SharedVectorStore and rebind.
+        uint32_t h = fourcc("IxFs");
+        WRITE1(h);
+        write_index_header(idx, f);
+        // Store-level state
+        uint64_t store_d = idxfs->store->d;
+        uint64_t store_code_size = idxfs->store->code_size;
+        uint64_t store_ntotal = idxfs->store->ntotal_store;
+        WRITE1(store_d);
+        WRITE1(store_code_size);
+        WRITE1(store_ntotal);
+        WRITEVECTOR(idxfs->store->codes);
+        WRITEVECTOR(idxfs->store->free_list);
+        // Index-level state
+        uint8_t identity = idxfs->is_identity_map ? 1 : 0;
+        WRITE1(identity);
+        WRITEVECTOR(idxfs->storage_id_map);
+        WRITEVECTOR(idxfs->deleted_bitmap);
     } else if (const IndexFlat* idxf = dynamic_cast<const IndexFlat*>(idx)) {
         uint32_t h =
                 fourcc(idxf->metric_type == METRIC_INNER_PRODUCT ? "IxFI"
@@ -851,6 +878,9 @@ void write_index(const Index* idx, IOWriter* f, int io_flags) {
                 : dynamic_cast<const IndexHNSWSQ*>(idx)     ? fourcc("IHNs")
                 : dynamic_cast<const IndexHNSW2Level*>(idx) ? fourcc("IHN2")
                 : dynamic_cast<const IndexHNSWCagra*>(idx)  ? fourcc("IHc2")
+                : (idxhnsw->storage &&
+                   dynamic_cast<const IndexFlatShared*>(idxhnsw->storage))
+                        ? fourcc("IHNF")
                                                             : 0;
         FAISS_THROW_IF_NOT(h != 0);
         WRITE1(h);

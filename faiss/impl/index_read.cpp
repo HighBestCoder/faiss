@@ -29,7 +29,9 @@
 #include <faiss/IndexAdditiveQuantizer.h>
 #include <faiss/IndexAdditiveQuantizerFastScan.h>
 #include <faiss/IndexFlat.h>
+#include <faiss/IndexFlatShared.h>
 #include <faiss/IndexHNSW.h>
+#include <faiss/SharedVectorStore.h>
 #include <faiss/IndexIVF.h>
 #include <faiss/IndexIVFAdditiveQuantizer.h>
 #include <faiss/IndexIVFAdditiveQuantizerFastScan.h>
@@ -950,6 +952,35 @@ std::unique_ptr<Index> read_index_up(IOReader* f, int io_flags) {
         READVECTOR(idxp->cum_sums);
         idxp->verbose = false;
         idx = std::move(idxp);
+    } else if (h == fourcc("IxFs")) {
+        // VDE shared-storage rollout: reconstruct SharedVectorStore and
+        // IndexFlatShared view.  Layout written by index_write.cpp:
+        //   header (Index base) | store_d | store_code_size | store_ntotal |
+        //   codes | free_list | identity (u8) | storage_id_map |
+        //   deleted_bitmap
+        uint64_t store_d = 0, store_code_size = 0, store_ntotal = 0;
+        // Read base Index header first so d/metric_type are populated.
+        auto idxfs = std::make_unique<IndexFlatShared>();
+        read_index_header(*idxfs, f);
+        READ1(store_d);
+        READ1(store_code_size);
+        READ1(store_ntotal);
+        auto store = std::make_shared<SharedVectorStore>(
+                static_cast<size_t>(store_d),
+                static_cast<size_t>(store_code_size));
+        READVECTOR(store->codes);
+        READVECTOR(store->free_list);
+        store->ntotal_store = static_cast<size_t>(store_ntotal);
+        uint8_t identity = 1;
+        READ1(identity);
+        idxfs->is_identity_map = (identity != 0);
+        READVECTOR(idxfs->storage_id_map);
+        READVECTOR(idxfs->deleted_bitmap);
+        idxfs->store = store;
+        idxfs->code_size = static_cast<size_t>(store_code_size);
+        idxfs->codes = MaybeOwnedVector<uint8_t>::create_view(
+                store->codes.data(), store->codes.size(), store);
+        idx = std::move(idxfs);
     } else if (
             h == fourcc("IxFI") || h == fourcc("IxF2") || h == fourcc("IxFl")) {
         std::unique_ptr<IndexFlat> idxf;
@@ -1411,10 +1442,16 @@ std::unique_ptr<Index> read_index_up(IOReader* f, int io_flags) {
     } else if (
             h == fourcc("IHNf") || h == fourcc("IHNp") || h == fourcc("IHNs") ||
             h == fourcc("IHN2") || h == fourcc("IHNc") || h == fourcc("IHc2") ||
-            h == fourcc("IHfP")) {
+            h == fourcc("IHfP") || h == fourcc("IHNF")) {
         std::unique_ptr<IndexHNSW> idxhnsw;
         if (h == fourcc("IHNf")) {
             idxhnsw = std::make_unique<IndexHNSWFlat>();
+        }
+        if (h == fourcc("IHNF")) {
+            // VDE composed IndexHNSW(storage=IndexFlatShared).  Use the
+            // bare IndexHNSW base; storage will be set from the nested
+            // read_index() below (which dispatches to "IxFs").
+            idxhnsw = std::make_unique<IndexHNSW>();
         }
         if (h == fourcc("IHfP")) {
             idxhnsw = std::make_unique<IndexHNSWFlatPanorama>();
