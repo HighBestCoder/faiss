@@ -9,6 +9,7 @@ set(FAISS_TEST_SRC
   test_metadata_store.cpp
   test_segmented_file_storage.cpp
   test_segmented_file_storage_crash.cpp
+  scale/test_segmented_storage_cohere_1m.cpp
   test_skip_code_bytes.cpp
   test_dealloc_invlists.cpp
   test_ivfpq_codec.cpp
