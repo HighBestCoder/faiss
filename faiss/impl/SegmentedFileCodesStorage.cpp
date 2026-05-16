@@ -21,6 +21,8 @@
 #include <unistd.h>
 
 #include <faiss/impl/FaissAssert.h>
+#include <faiss/impl/io.h>
+#include <faiss/index_io.h>
 
 namespace faiss {
 
@@ -43,6 +45,16 @@ std::string seg_path(const std::string& base, size_t i) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "/seg-%08zu.bin", i);
     return codes_dir(base) + buf;
+}
+
+std::string graph_file(const std::string& base, uint64_t gen) {
+    char buf[64];
+    std::snprintf(
+            buf,
+            sizeof(buf),
+            "/graph-%08llu.bin",
+            (unsigned long long)gen);
+    return graph_dir(base) + buf;
 }
 
 void mkdir_p(const std::string& path) {
@@ -219,8 +231,176 @@ void SegmentedFileCodesStorage::maybe_kill_(const char* phase) const {
     }
 }
 
-void SegmentedFileCodesStorage::flush(const Index* /*idx*/) {
-    FAISS_THROW_MSG("flush() not yet implemented");
+namespace {
+
+void write_segment_file(
+        const std::string& path,
+        const uint8_t* data,
+        size_t n,
+        bool do_fsync) {
+    std::string tmp = path + ".tmp";
+    FILE* fp = ::fopen(tmp.c_str(), "wb");
+    FAISS_THROW_IF_NOT_FMT(
+            fp, "open(%s): %s", tmp.c_str(), std::strerror(errno));
+    if (n > 0) {
+        size_t w = ::fwrite(data, 1, n, fp);
+        FAISS_THROW_IF_NOT_FMT(
+                w == n,
+                "short write on %s: %zu/%zu",
+                tmp.c_str(),
+                w,
+                n);
+    }
+    if (do_fsync) {
+        std::fflush(fp);
+        ::fsync(::fileno(fp));
+    }
+    std::fclose(fp);
+    int rc = ::rename(tmp.c_str(), path.c_str());
+    FAISS_THROW_IF_NOT_FMT(
+            rc == 0,
+            "rename(%s -> %s): %s",
+            tmp.c_str(),
+            path.c_str(),
+            std::strerror(errno));
+}
+
+uint32_t inner_fourcc_of(const Index* idx) {
+    VectorIOWriter w;
+    write_index(idx, &w, IO_FLAG_SKIP_CODE_BYTES);
+    FAISS_THROW_IF_NOT(w.data.size() >= sizeof(uint32_t));
+    uint32_t fcc;
+    std::memcpy(&fcc, w.data.data(), sizeof(uint32_t));
+    return fcc;
+}
+
+uint64_t file_size(const std::string& p) {
+    struct stat st;
+    if (::stat(p.c_str(), &st) != 0) {
+        return 0;
+    }
+    return (uint64_t)st.st_size;
+}
+
+void unlink_if_exists(const std::string& p) {
+    ::unlink(p.c_str());
+}
+
+} // anonymous namespace
+
+void SegmentedFileCodesStorage::flush(const Index* idx) {
+    FAISS_THROW_IF_NOT(idx != nullptr);
+    acquire_lock_();
+    mkdir_p(codes_dir(basepath_));
+    mkdir_p(graph_dir(basepath_));
+
+    const size_t current_bytes = buffer_.size();
+    const size_t committed = (size_t)committed_bytes();
+    const uint32_t cur_fcc = inner_fourcc_of(idx);
+
+    bool full_rewrite = last_committed_.segment_sizes.empty() ||
+            last_committed_.inner_fourcc != cur_fcc ||
+            last_committed_.code_size != code_size_ ||
+            last_committed_.segment_bytes_target !=
+                    opts_.segment_bytes_target ||
+            committed > current_bytes;
+
+    AppendableMetadata next;
+    next.format_version = 1;
+    next.inner_fourcc = cur_fcc;
+    next.ntotal = current_bytes / code_size_;
+    next.code_size = code_size_;
+    next.segment_bytes_target = opts_.segment_bytes_target;
+    next.graph_generation = last_committed_.graph_generation + 1;
+
+    const size_t per_seg =
+            (opts_.segment_bytes_target / code_size_) * code_size_;
+    FAISS_THROW_IF_NOT_MSG(
+            per_seg > 0,
+            "segment_bytes_target smaller than code_size: no codes fit");
+
+    size_t start_seg_id;
+    size_t start_offset;
+    if (full_rewrite) {
+        for (size_t i = 0; i < last_committed_.segment_sizes.size(); ++i) {
+            unlink_if_exists(seg_path(basepath_, i));
+        }
+        start_seg_id = 0;
+        start_offset = 0;
+        next.segment_sizes.clear();
+    } else {
+        start_seg_id = last_committed_.segment_sizes.size();
+        start_offset = committed;
+        next.segment_sizes = last_committed_.segment_sizes;
+    }
+
+    size_t off = start_offset;
+    size_t seg_id = start_seg_id;
+    while (off < current_bytes) {
+        size_t chunk = std::min(per_seg, current_bytes - off);
+        write_segment_file(
+                seg_path(basepath_, seg_id),
+                buffer_.data() + off,
+                chunk,
+                opts_.fsync_files);
+        maybe_kill_("seg_rename");
+        next.segment_sizes.push_back(chunk);
+        off += chunk;
+        ++seg_id;
+    }
+    maybe_kill_("seg_write_partial");
+
+    std::string g_path = graph_file(basepath_, next.graph_generation);
+    std::string g_tmp = g_path + ".tmp";
+    {
+        FileIOWriter w(g_tmp.c_str());
+        write_index(idx, &w, IO_FLAG_SKIP_CODE_BYTES);
+        if (opts_.fsync_files) {
+            std::fflush(w.f);
+            ::fsync(::fileno(w.f));
+        }
+    }
+    maybe_kill_("graph_write");
+    int rc = ::rename(g_tmp.c_str(), g_path.c_str());
+    FAISS_THROW_IF_NOT_FMT(
+            rc == 0,
+            "rename(%s -> %s): %s",
+            g_tmp.c_str(),
+            g_path.c_str(),
+            std::strerror(errno));
+    maybe_kill_("graph_rename");
+    next.graph_file_size = file_size(g_path);
+
+    meta_store_->commit(next);
+    maybe_kill_("meta_commit");
+
+    if (last_committed_.graph_generation > 0) {
+        unlink_if_exists(
+                graph_file(basepath_, last_committed_.graph_generation));
+    }
+    DIR* d = ::opendir(codes_dir(basepath_).c_str());
+    if (d) {
+        struct dirent* ent;
+        while ((ent = ::readdir(d)) != nullptr) {
+            if (ent->d_name[0] == '.') {
+                continue;
+            }
+            std::string name = ent->d_name;
+            if (name.size() != 16 || name.compare(0, 4, "seg-") != 0 ||
+                name.compare(12, 4, ".bin") != 0) {
+                continue;
+            }
+            size_t id = std::strtoull(name.c_str() + 4, nullptr, 10);
+            if (id >= next.segment_sizes.size()) {
+                ::unlink((codes_dir(basepath_) + "/" + name).c_str());
+            }
+        }
+        ::closedir(d);
+    }
+    maybe_kill_("gc");
+
+    last_committed_ = next;
+    release_lock_();
 }
 
 } // namespace faiss
