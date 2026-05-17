@@ -639,6 +639,18 @@ void IndexFlatShared::reconstruct(idx_t key, float* recons) const {
     memcpy(recons, store->get_vector(slot), sizeof(float) * d);
 }
 
+void IndexFlatShared::sa_encode(idx_t n, const float* x, uint8_t* bytes) const {
+    if (n > 0) {
+        memcpy(bytes, x, sizeof(float) * d * n);
+    }
+}
+
+void IndexFlatShared::sa_decode(idx_t n, const uint8_t* bytes, float* x) const {
+    if (n > 0) {
+        memcpy(x, bytes, sizeof(float) * d * n);
+    }
+}
+
 FlatCodesDistanceComputer* IndexFlatShared::get_FlatCodesDistanceComputer()
         const {
     if (metric_type == METRIC_L2) {

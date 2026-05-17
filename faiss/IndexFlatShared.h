@@ -64,6 +64,10 @@ struct IndexFlatShared : IndexFlatCodes {
 
     void reconstruct(idx_t key, float* recons) const override;
 
+    void sa_encode(idx_t n, const float* x, uint8_t* bytes) const override;
+
+    void sa_decode(idx_t n, const uint8_t* bytes, float* x) const override;
+
     FlatCodesDistanceComputer* get_FlatCodesDistanceComputer() const override;
 
     void permute_entries(const idx_t* perm);
